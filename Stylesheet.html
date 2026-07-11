@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Digifyce Report Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<?!= include('Stylesheet'); ?>
+</head>
+<body>
+
+<!-- LOGIN SCREEN -->
+<div id="loginScreen" class="login-screen">
+  <div class="login-card">
+    <div class="login-logo">
+      <div class="logo-mark">D</div>
+      <span class="logo-text">digifyce</span>
+    </div>
+    <h2 class="login-title">Report Dashboard</h2>
+    <p class="login-sub">Sign in to your account</p>
+    <div id="loginError" class="alert alert-error" style="display:none"></div>
+    <div class="form-group">
+      <label class="form-label">Username</label>
+      <input type="text" id="loginUsername" class="form-input" placeholder="Enter username" autocomplete="username">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Password</label>
+      <div class="input-eye-wrap">
+        <input type="password" id="loginPassword" class="form-input" placeholder="Enter password" autocomplete="current-password">
+        <button class="eye-btn" onclick="togglePwd('loginPassword',this)">Show</button>
+      </div>
+    </div>
+    <button class="btn btn-primary btn-full" onclick="doLogin()" id="loginBtn">
+      <span>Sign In</span>
+    </button>
+  </div>
+</div>
+
+<!-- MAIN APP -->
+<div id="mainApp" style="display:none">
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <div class="logo-mark sm">D</div>
+      <span class="logo-text">digifyce</span>
+    </div>
+    <nav class="sidebar-nav">
+      <a class="nav-item active" onclick="showPage('dashboard')" id="nav-dashboard">
+        <span class="nav-icon">&#9632;</span> Dashboard
+      </a>
+      <a class="nav-item" onclick="showPage('clients')" id="nav-clients">
+        <span class="nav-icon">&#9672;</span> Clients
+      </a>
+      <a class="nav-item" onclick="showPage('generate')" id="nav-generate">
+        <span class="nav-icon">&#9654;</span> Generate Report
+      </a>
+      <a class="nav-item" onclick="showPage('logs')" id="nav-logs">
+        <span class="nav-icon">&#9636;</span> Report Logs
+      </a>
+      <a class="nav-item owner-only" onclick="showPage('users')" id="nav-users" style="display:none">
+        <span class="nav-icon">&#9673;</span> Users
+      </a>
+      <a class="nav-item owner-only" onclick="showPage('approvals')" id="nav-approvals" style="display:none">
+        <span class="nav-icon">&#10022;</span> Approvals
+        <span class="badge" id="approvalBadge" style="display:none">0</span>
+      </a>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="user-chip">
+        <div class="user-avatar" id="userAvatar">?</div>
+        <div>
+          <div class="user-name" id="userName">--</div>
+          <div class="user-role" id="userRole">--</div>
+        </div>
+      </div>
+      <button class="btn-logout" onclick="doLogout()">Sign out</button>
+    </div>
+  </aside>
+
+  <!-- MAIN CONTENT -->
+  <main class="main-content">
+    <div class="topbar">
+      <button class="hamburger" onclick="toggleSidebar()">&#9776;</button>
+      <div class="topbar-title" id="topbarTitle">Dashboard</div>
+      <div class="topbar-right">
+        <span class="month-chip" id="currentMonthChip">--</span>
+      </div>
+    </div>
+
+    <!-- Flash message -->
+    <div id="flashMsg" class="flash-msg" style="display:none"></div>
+
+    <!-- PAGE: DASHBOARD -->
+    <div id="page-dashboard" class="page active">
+      <div class="page-header">
+        <div>
+          <h1 class="page-title">Dashboard</h1>
+          <p class="page-sub">Overview of all your client accounts</p>
+        </div>
+        <button class="btn btn-primary" onclick="showPage('generate')">Generate Report</button>
+      </div>
+      <div class="stats-row">
+        <div class="stat-card"><div class="stat-val" id="statClients">--</div><div class="stat-lbl">Total Clients</div></div>
+        <div class="stat-card"><div class="stat-val" id="statReports">--</div><div class="stat-lbl">Reports Generated</div></div>
+        <div class="stat-card"><div class="stat-val" id="statSuccess">--</div><div class="stat-lbl">Successful</div></div>
+        <div class="stat-card"><div class="stat-val" id="statFailed">--</div><div class="stat-lbl">Failed</div></div>
+      </div>
+      <div class="section-header">
+        <h2 class="section-title">Your Clients</h2>
+      </div>
+      <div id="clientCards" class="client-grid">
+        <div class="loading-state">Loading clients...</div>
+      </div>
+    </div>
+
+    <!-- PAGE: CLIENTS -->
+    <div id="page-clients" class="page">
+      <div class="page-header">
+        <h1 class="page-title">Clients</h1>
+        <button class="btn btn-primary" onclick="showAddClient()">+ Add Client</button>
+      </div>
+      <div id="clientsTable" class="table-wrap">
+        <div class="loading-state">Loading...</div>
+      </div>
+    </div>
+
+    <!-- PAGE: ADD / EDIT CLIENT FORM -->
+    <div id="page-clientform" class="page">
+      <div class="page-header">
+        <button class="btn-back" onclick="showPage('clients')">Back to Clients</button>
+        <h1 class="page-title" id="clientFormTitle">Add Client</h1>
+      </div>
+      <div class="form-card">
+        <input type="hidden" id="editClientKey">
+        <input type="hidden" id="editMode" value="add">
+
+        <div class="form-section-title">Basic Info</div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Client Key <span class="req">*</span></label>
+            <input type="text" id="fc_client_key" class="form-input" placeholder="e.g. BlackApe (no spaces)">
+            <span class="form-hint">Unique identifier. No spaces. Cannot be changed later.</span>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Brand Name <span class="req">*</span></label>
+            <input type="text" id="fc_name" class="form-input" placeholder="e.g. Black Ape Apparels">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Agent Email <span class="req">*</span></label>
+            <input type="email" id="fc_agent_email" class="form-input" placeholder="agent@digifyce.com">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Client Logo Drive File ID</label>
+            <input type="text" id="fc_client_logo_id" class="form-input" placeholder="Google Drive File ID (optional)">
+          </div>
+        </div>
+
+        <div class="form-section-title">
+          Google Sheet
+          <span class="optional-tag">Leave blank — use Create Sheet button after saving</span>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Sheet ID <span class="optional-tag">optional</span></label>
+          <input type="text" id="fc_sheet_id" class="form-input" placeholder="Auto-filled when you click Create Sheet, or paste manually">
+          <span class="form-hint">From the Sheet URL: docs.google.com/spreadsheets/d/SHEET_ID/edit</span>
+        </div>
+
+        <div class="form-section-title">Meta Ads</div>
+        <div class="form-group">
+          <label class="form-label">Access Token <span class="req">*</span></label>
+          <div class="input-eye-wrap">
+            <input type="password" id="fc_meta_access_token" class="form-input" placeholder="EAA...">
+            <button class="eye-btn" onclick="togglePwd('fc_meta_access_token',this)">Show</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Ad Account IDs <span class="req">*</span></label>
+          <input type="text" id="fc_meta_ad_account_ids" class="form-input" placeholder="act_111111,act_222222,act_333333">
+          <span class="form-hint">Comma separated if multiple accounts.</span>
+        </div>
+
+        <div class="form-section-title">Google Analytics 4</div>
+        <div class="form-group">
+          <label class="form-label">GA4 Property ID <span class="req">*</span></label>
+          <input type="text" id="fc_ga4_property_id" class="form-input" placeholder="e.g. 514241136">
+          <span class="form-hint">Numbers only. Found in GA4 Admin → Property Settings.</span>
+        </div>
+
+        <div class="form-section-title">Search Console</div>
+        <div class="form-group">
+          <label class="form-label">GSC Site URL <span class="req">*</span></label>
+          <input type="text" id="fc_gsc_site_url" class="form-input" placeholder="sc-domain:clientdomain.com">
+          <span class="form-hint">Exactly as shown in Search Console.</span>
+        </div>
+
+        <div class="form-section-title">Google Ads <span class="optional-tag">Optional</span></div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Enabled?</label>
+            <select id="fc_google_ads_enabled" class="form-input">
+              <option value="false">No</option>
+              <option value="true">Yes</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Customer ID</label>
+            <input type="text" id="fc_google_ads_customer_id" class="form-input" placeholder="XXX-XXX-XXXX">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Developer Token</label>
+            <input type="text" id="fc_google_ads_dev_token" class="form-input" placeholder="Developer token">
+          </div>
+          <div class="form-group">
+            <label class="form-label">MCC ID</label>
+            <input type="text" id="fc_google_ads_mcc_id" class="form-input" placeholder="MCC customer ID">
+          </div>
+        </div>
+
+        <div class="form-actions">
+          <button class="btn btn-ghost" onclick="showPage('clients')">Cancel</button>
+          <button class="btn btn-primary" onclick="submitClientForm()" id="clientFormBtn">Save Client</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- PAGE: GENERATE REPORT -->
+    <div id="page-generate" class="page">
+      <div class="page-header">
+        <h1 class="page-title">Generate Report</h1>
+      </div>
+      <div class="generate-layout">
+        <div class="form-card">
+          <div class="form-section-title">Select Client</div>
+          <div class="form-group">
+            <label class="form-label">Client</label>
+            <select id="gen_client" class="form-input">
+              <option value="">-- Select a client --</option>
+              <option value="ALL">All Clients</option>
+            </select>
+          </div>
+
+          <div class="form-section-title">Report Month</div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Mode</label>
+              <select id="gen_mode" class="form-input" onchange="toggleMonthInput()">
+                <option value="auto">Auto (last month)</option>
+                <option value="manual">Manual (pick month)</option>
+              </select>
+            </div>
+            <div class="form-group" id="gen_month_wrap" style="display:none">
+              <label class="form-label">Month and Year</label>
+              <input type="month" id="gen_month" class="form-input">
+              <span class="form-hint">e.g. select January 2026</span>
+            </div>
+          </div>
+
+          <div class="form-actions">
+            <button class="btn btn-primary btn-full" onclick="generateReport()" id="genBtn">
+              Generate Report
+            </button>
+          </div>
+        </div>
+
+        <div id="genResults" style="display:none">
+          <div class="results-header">Results</div>
+          <div id="genResultsInner"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PAGE: REPORT LOGS -->
+    <div id="page-logs" class="page">
+      <div class="page-header">
+        <h1 class="page-title">Report Logs</h1>
+        <button class="btn btn-ghost sm" onclick="loadLogs()">Refresh</button>
+      </div>
+      <div id="logsTable" class="table-wrap">
+        <div class="loading-state">Loading logs...</div>
+      </div>
+    </div>
+
+    <!-- PAGE: USERS (owner only) -->
+    <div id="page-users" class="page">
+      <div class="page-header">
+        <h1 class="page-title">Users</h1>
+        <button class="btn btn-primary" onclick="showAddUser()">+ Add User</button>
+      </div>
+      <div id="usersTable" class="table-wrap">
+        <div class="loading-state">Loading...</div>
+      </div>
+
+      <!-- Add user modal -->
+      <div id="userModal" class="modal" style="display:none">
+        <div class="modal-card">
+          <div class="modal-header">
+            <span id="userModalTitle">Add User</span>
+            <button class="modal-close" onclick="closeUserModal()">X</button>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Username</label>
+            <input type="text" id="um_username" class="form-input">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Full Name</label>
+            <input type="text" id="um_name" class="form-input">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Password</label>
+            <input type="password" id="um_password" class="form-input">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Role</label>
+            <select id="um_role" class="form-input">
+              <option value="manager">Manager</option>
+              <option value="owner">Owner</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Assigned Clients</label>
+            <input type="text" id="um_clients" class="form-input" placeholder="BlackApe,Client2 or ALL">
+            <span class="form-hint">Comma separated client keys. Use ALL for full access.</span>
+          </div>
+          <div class="form-actions">
+            <button class="btn btn-ghost" onclick="closeUserModal()">Cancel</button>
+            <button class="btn btn-primary" onclick="saveUser()">Save User</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PAGE: APPROVALS (owner only) -->
+    <div id="page-approvals" class="page">
+      <div class="page-header">
+        <h1 class="page-title">Pending Approvals</h1>
+        <button class="btn btn-ghost sm" onclick="loadApprovals()">Refresh</button>
+      </div>
+      <div id="approvalsTable" class="table-wrap">
+        <div class="loading-state">Loading...</div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<?!= include('JavaScript'); ?>
+</body>
+</html>
