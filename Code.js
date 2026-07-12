@@ -2712,3 +2712,50 @@ function fixUserAccess() {
   }
   Logger.log("=== DONE — Refresh the app and try again ===");
 }
+
+// ============================================================
+// DIAGNOSTIC — Run to debug access denied on report generation
+// ============================================================
+function debugReportAccess() {
+  const USERNAME  = "owner";   // ← change if you use a different username
+  const CLIENT_KEY = "hapliearth"; // ← your client key
+
+  Logger.log("=== REPORT ACCESS DIAGNOSTIC ===");
+
+  // 1. Check verifyUserRole
+  const isOwner = verifyUserRole(USERNAME, "owner");
+  Logger.log("verifyUserRole('" + USERNAME + "', 'owner') = " + isOwner);
+
+  // 2. Print raw user row from _Users sheet
+  const sheet = getSystemSheet().getSheetByName("_Users");
+  const data = sheet.getDataRange().getValues();
+  const hdrs = data[0];
+  Logger.log("_Users headers: " + JSON.stringify(hdrs));
+  for (let i = 1; i < data.length; i++) {
+    const row = data[i];
+    if (String(row[0]).trim().toLowerCase() === USERNAME.toLowerCase()) {
+      Logger.log("Found user row: " + JSON.stringify(row));
+      Logger.log("  username:         '" + row[hdrs.indexOf("username")] + "'");
+      Logger.log("  role:             '" + row[hdrs.indexOf("role")] + "'");
+      Logger.log("  assigned_clients: '" + row[hdrs.indexOf("assigned_clients")] + "'");
+      Logger.log("  is_active:        " + row[hdrs.indexOf("is_active")] + " (type: " + typeof row[hdrs.indexOf("is_active")] + ")");
+    }
+  }
+
+  // 3. Check the client record
+  const clientResult = serverGetClientFull(CLIENT_KEY);
+  Logger.log("serverGetClientFull('" + CLIENT_KEY + "') success: " + clientResult.success);
+  if (clientResult.success) {
+    const c = clientResult.client;
+    Logger.log("  sheet_id:           '" + c.sheet_id + "'");
+    Logger.log("  meta_access_token:  '" + (c.meta_access_token ? "SET" : "MISSING") + "'");
+    Logger.log("  meta_ad_account_ids:'" + c.meta_ad_account_ids + "'");
+    Logger.log("  ga4_property_id:    '" + c.ga4_property_id + "'");
+    Logger.log("  shopify_enabled:    " + c.shopify_enabled);
+    Logger.log("  shopify_access_token: '" + (c.shopify_access_token ? "SET" : "MISSING") + "'");
+  } else {
+    Logger.log("  ERROR: " + clientResult.error);
+  }
+
+  Logger.log("=== END DIAGNOSTIC ===");
+}
