@@ -60,6 +60,10 @@ function initSystemSheets() {
     getOrCreateTab(ss, "_ReportLogs",   ["id","client_key","client_name","month_label","generated_by","status","slides_url","pptx_url","error_msg","generated_at"]);
     getOrCreateTab(ss, "_EditRequests", ["id","client_key","requested_by","field_changes","status","requested_at","reviewed_at","reviewed_by"]);
     getOrCreateTab(ss, "_AuditLogs",    ["id","timestamp","username","action","details"]);
+    
+    // Migrate _Clients sheet if it was created with an old schema
+    migrateClientsSheetSchema();
+
     const usersSheet = ss.getSheetByName("_Users");
     if (usersSheet.getLastRow() <= 1) {
       usersSheet.appendRow([OWNER_USERNAME, hashPassword(OWNER_PASSWORD), "Owner", "owner", "ALL", new Date().toISOString(), true]);
@@ -68,6 +72,97 @@ function initSystemSheets() {
   } catch(e) {
     Logger.log("initSystemSheets error: " + e.message);
     return { success: false, error: e.message };
+  }
+}
+
+function migrateClientsSheetSchema() {
+  try {
+    const ss = getSystemSheet();
+    const sheet = ss.getSheetByName("_Clients");
+    if (!sheet) return;
+
+    const data = sheet.getDataRange().getValues();
+    if (data.length === 0) return;
+    const hdrs = data[0].map(h => String(h).trim().toLowerCase());
+
+    const targetHdrs = [
+      "client_key","name","agent_email","client_logo_id","sheet_id",
+      "meta_access_token","meta_ad_account_ids","google_ads_enabled",
+      "google_ads_dev_token","google_ads_customer_id","google_ads_mcc_id",
+      "ga4_property_id","gsc_site_url","shopify_enabled","shopify_access_token",
+      "shopify_shop_name","created_at","updated_at","is_active"
+    ];
+
+    // Check if headers match target exactly
+    let matches = true;
+    if (hdrs.length !== targetHdrs.length) {
+      matches = false;
+    } else {
+      for (let i = 0; i < hdrs.length; i++) {
+        if (hdrs[i] !== targetHdrs[i]) { matches = false; break; }
+      }
+    }
+
+    if (matches) {
+      Logger.log("  ✓ _Clients schema is already up to date.");
+      return;
+    }
+
+    Logger.log("  ⚠️ Migrating _Clients sheet to new 19-column schema...");
+
+    const migratedRows = [];
+    for (let i = 1; i < data.length; i++) {
+      const row = data[i];
+      const client = {};
+
+      // Initialize default values
+      targetHdrs.forEach(h => {
+        if (h === "shopify_enabled" || h === "google_ads_enabled") client[h] = false;
+        else if (h === "is_active") client[h] = true;
+        else client[h] = "";
+      });
+
+      // Map values from existing columns using matching headers
+      hdrs.forEach((h, colIdx) => {
+        if (h && colIdx < row.length) {
+          const val = row[colIdx];
+          if (val !== undefined && val !== null) {
+            client[h] = val;
+          }
+        }
+      });
+
+      // Special check: If shopify_enabled is empty/unset, but was saved in an offset column
+      // due to mismatched headers, let's restore it.
+      // (Old columns: 14 was created_at, 15 was updated_at, 16 was is_active)
+      // If we see boolean values in created_at or updated_at, it means there was an offset:
+      if (typeof client.created_at === "boolean" || client.created_at === "TRUE" || client.created_at === "FALSE") {
+        client.shopify_enabled = client.created_at;
+        client.shopify_access_token = client.updated_at;
+        client.shopify_shop_name = client.is_active;
+        // Reset timestamps to safe defaults
+        client.created_at = new Date().toISOString();
+        client.updated_at = new Date().toISOString();
+        client.is_active = true;
+      }
+
+      const newRow = targetHdrs.map(h => client[h]);
+      migratedRows.push(newRow);
+    }
+
+    // Rewrite sheet with correct headers and data
+    sheet.clear();
+    sheet.getRange(1, 1, 1, targetHdrs.length).setValues([targetHdrs]);
+    sheet.getRange(1, 1, 1, targetHdrs.length)
+      .setBackground("#0D2B6E").setFontColor("#FFFFFF").setFontWeight("bold");
+    sheet.setFrozenRows(1);
+
+    if (migratedRows.length > 0) {
+      sheet.getRange(2, 1, migratedRows.length, targetHdrs.length).setValues(migratedRows);
+    }
+    Logger.log("  ✅ _Clients schema migration completed successfully! Mapped " + migratedRows.length + " clients.");
+  } catch(e) {
+    Logger.log("  ❌ Error migrating _Clients schema: " + e.message);
   }
 }
 
@@ -255,6 +350,21 @@ function serverGetClientFull(clientKey) {
   } catch(e) { return { success: false, error: e.message }; }
 }
 
+function normalizeMetaAdAccountIds(idsString) {
+  if (!idsString) return "";
+  return String(idsString)
+    .split(",")
+    .map(id => {
+      let trimmed = id.trim();
+      if (trimmed && !isNaN(trimmed) && !trimmed.startsWith("act_")) {
+        return "act_" + trimmed;
+      }
+      return trimmed;
+    })
+    .filter(Boolean)
+    .join(",");
+}
+
 function serverSaveClient(clientData, currentUsername) {
   try {
     if (!verifyUserRole(currentUsername, "manager")) return { success: false, error: "Unauthorized" };
@@ -262,16 +372,7 @@ function serverSaveClient(clientData, currentUsername) {
     
     // Auto-fix Meta Ad Account IDs if act_ is missing
     if (clientData.meta_ad_account_ids) {
-      clientData.meta_ad_account_ids = String(clientData.meta_ad_account_ids)
-        .split(",")
-        .map(id => {
-          let trimmed = id.trim();
-          if (trimmed && !isNaN(trimmed) && !trimmed.startsWith("act_")) {
-            return "act_" + trimmed;
-          }
-          return trimmed;
-        })
-        .join(",");
+      clientData.meta_ad_account_ids = normalizeMetaAdAccountIds(clientData.meta_ad_account_ids);
     }
 
     const sheet = getSystemSheet().getSheetByName("_Clients");
@@ -330,7 +431,12 @@ function serverApproveEdit(requestId, reviewedBy) {
         if (String(cData[j][0]).trim() === clientKey) {
           Object.entries(changes).forEach(([field, value]) => {
             const colIdx = cHdrs.indexOf(field);
-            if (colIdx >= 0) clientSheet.getRange(j+1, colIdx+1).setValue(value);
+            if (colIdx >= 0) {
+              if (field === "meta_ad_account_ids") {
+                value = normalizeMetaAdAccountIds(value);
+              }
+              clientSheet.getRange(j+1, colIdx+1).setValue(value);
+            }
           });
           const updIdx = cHdrs.indexOf("updated_at");
           if (updIdx >= 0) clientSheet.getRange(j+1, updIdx+1).setValue(new Date().toISOString());
@@ -421,7 +527,7 @@ function serverGenerateReport(clientKey, month, generatedBy, userClients) {
       sheetId: c.sheet_id,
       meta: {
         accessToken: c.meta_access_token,
-        adAccountIds: c.meta_ad_account_ids ? String(c.meta_ad_account_ids).split(",").map(s => s.trim()) : []
+        adAccountIds: c.meta_ad_account_ids ? normalizeMetaAdAccountIds(c.meta_ad_account_ids).split(",").map(s => s.trim()) : []
       },
       googleAds: {
         enabled: c.google_ads_enabled === true || c.google_ads_enabled === "TRUE",
@@ -448,11 +554,10 @@ function serverGenerateReport(clientKey, month, generatedBy, userClients) {
 
     // Auto-sync Shopify data before running report
     if (CLIENT.shopify.enabled) {
-      try {
-        Logger.log("  [Shopify] Syncing data for " + CLIENT.name + " (" + M.currLabel + ")...");
-        serverSyncShopify(CLIENT.clientKey, M.currLabel);
-      } catch (se) {
-        Logger.log("  ⚠️ Shopify Sync failed: " + se.message);
+      Logger.log("  [Shopify] Syncing data for " + CLIENT.name + " (" + M.currLabel + ")...");
+      const syncResult = serverSyncShopify(CLIENT.clientKey, M.currLabel);
+      if (!syncResult.success) {
+        throw new Error("Shopify Sync Failed: " + syncResult.error + " (Please double-check your Shopify Access Token and Store Subdomain under Client settings)");
       }
     }
 
@@ -818,29 +923,37 @@ function _findExistingReport(clientKey, monthLabel) {
     const sheet = getSystemSheet().getSheetByName("_ReportLogs");
     if (!sheet) return null;
     const data = sheet.getDataRange().getValues(), hdrs = data[0];
-    const keyIdx  = hdrs.indexOf("client_key");
-    const monIdx  = hdrs.indexOf("month_label");
-    const urlIdx  = hdrs.indexOf("slides_url");
-    const statIdx = hdrs.indexOf("status");
+    
+    // Find column indexes dynamically (case-insensitive and space-trimmed)
+    const keyIdx  = hdrs.findIndex(h => String(h).toLowerCase().trim() === "client_key");
+    const monIdx  = hdrs.findIndex(h => String(h).toLowerCase().trim() === "month_label");
+    const urlIdx  = hdrs.findIndex(h => String(h).toLowerCase().trim() === "slides_url");
+    const statIdx = hdrs.findIndex(h => String(h).toLowerCase().trim() === "status");
+
+    if (keyIdx < 0 || monIdx < 0 || urlIdx < 0 || statIdx < 0) {
+      Logger.log("  ⚠️ Missing required columns in _ReportLogs");
+      return null;
+    }
+
     // Search from bottom up — most recent first
     for (let i = data.length - 1; i >= 1; i--) {
       const row = data[i];
-      if (String(row[keyIdx]).trim() !== clientKey.trim()) continue;
-      if (String(row[monIdx]).trim() !== monthLabel.trim()) continue;
-      if (String(row[statIdx]).trim() !== "success") continue;
+      if (String(row[keyIdx]).trim().toLowerCase() !== clientKey.trim().toLowerCase()) continue;
+      if (String(row[monIdx]).trim().toLowerCase() !== monthLabel.trim().toLowerCase()) continue;
+      if (String(row[statIdx]).trim().toLowerCase() !== "success") continue;
+      
       const url = String(row[urlIdx] || "").trim();
       if (!url) continue;
       const match = url.match(/\/d\/([a-zA-Z0-9_-]+)/);
       if (!match) continue;
       const fileId = match[1];
-      // Skip DriveApp.getFileById — restricted on this account
-      // SlidesApp.openById handles missing files gracefully
+      
       Logger.log("  ✓ Found existing report in logs: " + fileId);
       return fileId;
     }
     return null;
   } catch(e) {
-    Logger.log("  \u26a0\ufe0f _findExistingReport error: " + e.message);
+    Logger.log("  ⚠️ _findExistingReport error: " + e.message);
     return null;
   }
 }
