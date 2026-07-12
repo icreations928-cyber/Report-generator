@@ -1126,109 +1126,66 @@ function mVal(arr, type) {
 function fetchGoogleAds(dateStart, dateEnd, CLIENT) {
   if (!CLIENT.googleAds.enabled) return { campaigns: [], totals: { spend:0, revenue:0, orders:0, impressions:0, clicks:0 } };
   
-  const custId = CLIENT.googleAds.customerId ? CLIENT.googleAds.customerId.replace(/-/g,"") : "";
-  const devToken = CLIENT.googleAds.developerToken ? CLIENT.googleAds.developerToken.trim() : "";
-  
-  // If developer token or customer ID is missing, query Google Ads campaign metrics via GA4 (requires no developer token!)
-  if (!devToken || !custId) {
-    Logger.log("  ⚠️ No Google Ads Developer Token or Customer ID configured. Querying GA4 property for Google Ads campaign data...");
-    return fetchGoogleAdsViaGA4(dateStart, dateEnd, CLIENT);
-  }
-  
   try {
+    const custId = CLIENT.googleAds.customerId ? CLIENT.googleAds.customerId.replace(/-/g,"") : "";
+    if (!custId || custId.trim() === "") {
+      throw new Error("Google Ads Ad Account ID (Customer ID) is missing. Please configure it in your Client settings.");
+    }
+    
+    // Fetch Developer Token from client settings or automatically fall back to the global Script Properties
+    let devToken = CLIENT.googleAds.developerToken ? CLIENT.googleAds.developerToken.trim() : "";
+    if (!devToken) {
+      devToken = PropertiesService.getScriptProperties().getProperty("GOOGLE_ADS_DEVELOPER_TOKEN");
+    }
+    
+    if (!devToken || devToken.trim() === "") {
+      throw new Error("Google Ads Developer Token is not configured. Please add it to your Client settings or the Google Apps Script Properties under GOOGLE_ADS_DEVELOPER_TOKEN.");
+    }
+    
     const mccId  = CLIENT.googleAds.managerCustomerId ? CLIENT.googleAds.managerCustomerId.replace(/-/g,"") : custId;
-    const headers = { "Authorization": "Bearer " + ScriptApp.getOAuthToken(), "developer-token": devToken, "login-customer-id": mccId, "Content-Type": "application/json" };
+    const headers = { 
+      "Authorization": "Bearer " + ScriptApp.getOAuthToken(), 
+      "developer-token": devToken, 
+      "login-customer-id": mccId, 
+      "Content-Type": "application/json" 
+    };
+    
     const query = `SELECT campaign.name,campaign.status,metrics.cost_micros,metrics.conversions,metrics.conversions_value,metrics.impressions,metrics.clicks FROM campaign WHERE segments.date BETWEEN '${dateStart}' AND '${dateEnd}' AND campaign.status = 'ENABLED' ORDER BY metrics.cost_micros DESC LIMIT 50`;
-    const resp = UrlFetchApp.fetch("https://googleads.googleapis.com/v19/customers/" + custId + "/googleAds:search", { method:"POST", contentType:"application/json", headers, payload: JSON.stringify({ query }), muteHttpExceptions: true });
+    const resp = UrlFetchApp.fetch("https://googleads.googleapis.com/v19/customers/" + custId + "/googleAds:search", { 
+      method: "POST", 
+      contentType: "application/json", 
+      headers: headers, 
+      payload: JSON.stringify({ query }), 
+      muteHttpExceptions: true 
+    });
+    
     const json = JSON.parse(resp.getContentText());
     if (json.error) throw new Error("Google Ads [" + CLIENT.name + "]: " + json.error.message);
+    
     const results = json.results || [], allCampaigns = [];
     let totSpend = 0, totRev = 0, totOrders = 0, totImpr = 0, totClicks = 0;
+    
     results.forEach(row => {
       const m = row.metrics || {}, spend = parseInt(m.cost_micros || 0) / 1e6, revenue = parseFloat(m.conversions_value || 0), orders = Math.round(parseFloat(m.conversions || 0));
-      allCampaigns.push({ channel:"GOOGLE", name: row.campaign?.name || "—", objective:"SALES", orders, spent: Math.round(spend), sales: Math.round(revenue), roas: spend > 0 ? (revenue/spend).toFixed(1) + "x" : "—" });
-      totSpend += spend; totRev += revenue; totOrders += orders; totImpr += parseInt(m.impressions || 0); totClicks += parseInt(m.clicks || 0);
+      allCampaigns.push({ 
+        channel: "GOOGLE", 
+        name: row.campaign?.name || "—", 
+        objective: "SALES", 
+        orders: orders, 
+        spent: Math.round(spend), 
+        sales: Math.round(revenue), 
+        roas: spend > 0 ? (revenue/spend).toFixed(1) + "x" : "—" 
+      });
+      totSpend += spend; 
+      totRev += revenue; 
+      totOrders += orders; 
+      totImpr += parseInt(m.impressions || 0); 
+      totClicks += parseInt(m.clicks || 0);
     });
+    
     return { campaigns: allCampaigns, totals: { spend: Math.round(totSpend), revenue: Math.round(totRev), orders: totOrders, impressions: totImpr, clicks: totClicks } };
   } catch(e) {
-    Logger.log("  ⚠️ Google Ads API error: " + e.message + ". Trying GA4 fallback for Google Ads...");
-    return fetchGoogleAdsViaGA4(dateStart, dateEnd, CLIENT);
-  }
-}
-
-function fetchGoogleAdsViaGA4(dateStart, dateEnd, CLIENT) {
-  if (!CLIENT.ga4.propertyId || String(CLIENT.ga4.propertyId).trim() === "") {
-    Logger.log("  ⚠️ Cannot run GA4 fallback for Google Ads because GA4 Property ID is missing.");
-    return { campaigns: [], totals: { spend:0, revenue:0, orders:0, impressions:0, clicks:0 } };
-  }
-  try {
-    const pid = CLIENT.ga4.propertyId;
-    const body = {
-      dateRanges: [{ startDate: dateStart, endDate: dateEnd }],
-      dimensions: [{ name: "sessionGoogleAdsCampaignName" }],
-      metrics: [
-        { name: "advertiserAdCost" },
-        { name: "advertiserAdClicks" },
-        { name: "advertiserAdImpressions" },
-        { name: "conversions" },
-        { name: "totalRevenue" }
-      ],
-      dimensionFilter: {
-        filter: {
-          fieldName: "sessionGoogleAdsCampaignName",
-          stringFilter: {
-            matchType: "CONTAINS",
-            value: ""
-          }
-        }
-      }
-    };
-    
-    const resp = ga4Report(pid, body);
-    const results = resp.rows || [], allCampaigns = [];
-    let totSpend = 0, totRev = 0, totOrders = 0, totImpr = 0, totClicks = 0;
-    
-    results.forEach(row => {
-      const campName = row.dimensionValues[0].value;
-      if (!campName || campName === "(not set)") return;
-      
-      const spend = parseFloat(row.metricValues[0].value || 0);
-      const clicks = parseInt(row.metricValues[1].value || 0);
-      const impressions = parseInt(row.metricValues[2].value || 0);
-      const conversions = Math.round(parseFloat(row.metricValues[3].value || 0));
-      const revenue = parseFloat(row.metricValues[4].value || 0);
-      
-      allCampaigns.push({
-        channel: "GOOGLE",
-        name: campName,
-        objective: "SALES",
-        orders: conversions,
-        spent: Math.round(spend),
-        sales: Math.round(revenue),
-        roas: spend > 0 ? (revenue / spend).toFixed(1) + "x" : "—"
-      });
-      
-      totSpend += spend;
-      totRev += revenue;
-      totOrders += conversions;
-      totImpr += impressions;
-      totClicks += clicks;
-    });
-    
-    allCampaigns.sort((a, b) => b.spent - a.spent);
-    
-    return {
-      campaigns: allCampaigns.slice(0, 50),
-      totals: {
-        spend: Math.round(totSpend),
-        revenue: Math.round(totRev),
-        orders: totOrders,
-        impressions: totImpr,
-        clicks: totClicks
-      }
-    };
-  } catch(e) {
-    Logger.log("  ⚠️ fetchGoogleAdsViaGA4 error: " + e.message);
+    Logger.log("  ⚠️ Google Ads error: " + e.message);
     return { campaigns: [], totals: { spend:0, revenue:0, orders:0, impressions:0, clicks:0 } };
   }
 }
