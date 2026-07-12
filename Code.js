@@ -600,6 +600,14 @@ const TAB_STRUCTURE = {
       ["Jan 2026","Mumbai, Maharashtra","",""],
     ],
   },
+  "Shopify_Campaigns": {
+    titleRow:  ["DIGIFYCE — SHOPIFY CAMPAIGNS"],
+    noteRow:   ["Auto-populated: campaign performance and channel attribution report."],
+    headerRow: ["Month","Campaign Name","Channel / Source","Sessions","Orders","Revenue (₹)","Conversion Rate (%)"],
+    sampleRows:[
+      ["Jan 2026","Campaign Name","Facebook / Instagram","","","",""],
+    ],
+  },
   "Strategy": {
     titleRow:  ["DIGIFYCE — STRATEGY & PROJECTIONS"],
     noteRow:   ["Sections: APPROACH_1, APPROACH_2, APPROACH_3, PROJECTION. Only current month needed."],
@@ -613,7 +621,7 @@ const TAB_STRUCTURE = {
   },
 };
 
-const TAB_ORDER = ["Retention","Retention_Summary","Shopify_Summary","Shopify_Products","Shopify_Locations","Strategy"];
+const TAB_ORDER = ["Retention","Retention_Summary","Shopify_Summary","Shopify_Products","Shopify_Locations","Shopify_Campaigns","Strategy"];
 
 
 // ============================================================
@@ -884,8 +892,11 @@ function _runReportForClient(CLIENT, M) {
   if (existingId) {
     Logger.log("  Updating existing report...");
     deck = SlidesApp.openById(existingId);
-    deck.getSlides().forEach(slide => slide.remove());
-    // Rename using SlidesApp only — avoids DriveApp.getFileById restriction
+    const slides = deck.getSlides();
+    // Keep the first slide as a temporary placeholder to prevent the "Cannot delete last slide" crash
+    for (let i = slides.length - 1; i > 0; i--) {
+      slides[i].remove();
+    }
     deck.setName(reportName);
   } else {
     Logger.log("  Creating new report...");
@@ -895,10 +906,21 @@ function _runReportForClient(CLIENT, M) {
   const ctx = { deck, M, CLIENT, metaCurr, metaPrev, gAdsCurr, gAdsPrev, ga4Curr, ga4Prev, gsc, sheetData, computed, inferences, recs };
   buildAllSlides(ctx);
 
+  // Clean up initial placeholder slides
   const slides = deck.getSlides();
-  if (!existingId && slides.length > 1) {
-    const first = slides[0];
-    if (first.getShapes().length === 0 && first.getImages().length === 0) first.remove();
+  if (existingId) {
+    // For updated reports, remove the original placeholder slide we kept at the start
+    if (slides.length > 1) {
+      slides[0].remove();
+    }
+  } else {
+    // For brand new reports, remove the default blank first slide created by SlidesApp.create()
+    if (slides.length > 1) {
+      const first = slides[0];
+      if (first.getShapes().length === 0 && first.getImages().length === 0) {
+        first.remove();
+      }
+    }
   }
 
   const fileId = deck.getId();
@@ -1007,6 +1029,26 @@ function readSheet(M, CLIENT) {
     .map(r => ({ location: String(r["Location (City, State)"] || "").trim(), orders: num(r["Orders"]), revenue: num(r["Revenue (₹)"]) }))
     .filter(l => l.location && l.revenue > 0).sort((a,b) => b.revenue - a.revenue).slice(0, 8);
 
+  // Read Shopify_Campaigns (auto-created by sync engine)
+  const shopifyCampaigns = (() => {
+    try {
+      return getRows("Shopify_Campaigns", curr)
+        .map(r => ({
+          campaign: String(r["Campaign Name"] || "").trim(),
+          source:   String(r["Channel / Source"] || "").trim(),
+          sessions: num(r["Sessions"]),
+          orders:   num(r["Orders"]),
+          revenue:  num(r["Revenue (₹)"]),
+          convRate: String(r["Conversion Rate (%)"] || "0%").replace("%","")
+        }))
+        .filter(c => c.campaign && (c.orders > 0 || c.sessions > 0))
+        .sort((a,b) => b.revenue - a.revenue).slice(0, 8);
+    } catch(e) {
+      Logger.log("⚠️ Shopify_Campaigns tab not found yet: " + e.message);
+      return [];
+    }
+  })();
+
   const retRows = getRows("Retention", curr);
   function retRow(channel) { return retRows.find(r => String(r["Channel"]).toLowerCase() === channel.toLowerCase()) || {}; }
 
@@ -1057,7 +1099,7 @@ function readSheet(M, CLIENT) {
 
   return {
     shopCurr, shopPrev, retention,
-    shopify: { grossSales: shopCurr.grossSales, totalOrders: shopCurr.totalOrders, newCustomers: shopCurr.newCustomers, aov: shopCurr.aov, salesByProduct: shopifyProducts, salesByLocation: shopifyLocations },
+    shopify: { grossSales: shopCurr.grossSales, totalOrders: shopCurr.totalOrders, newCustomers: shopCurr.newCustomers, aov: shopCurr.aov, salesByProduct: shopifyProducts, salesByLocation: shopifyLocations, campaigns: shopifyCampaigns },
     approaches, projections,
   };
 }
@@ -1535,7 +1577,7 @@ function buildAllSlides(ctx) {
   if (ctx.CLIENT.googleAds.enabled) slide_CampaignTable(ctx, ctx.gAdsCurr, "GOOGLE ADS");
   slide_OrganicChannels(ctx); slide_SEOPages(ctx); slide_SEOQueries(ctx); slide_BestCreatives(ctx);
   if (ctx.sheetData.approaches.length > 0) { slide_ApproachesIntro(ctx); ctx.sheetData.approaches.forEach((ap,i) => slide_Approach(ctx, i+1, ap)); }
-  slide_SalesByProduct(ctx); slide_SalesByLocation(ctx); slide_Retention(ctx);
+  slide_SalesByProduct(ctx); slide_SalesByLocation(ctx); slide_ShopifyCampaigns(ctx); slide_Retention(ctx);
   slide_Inferences(ctx); slide_Recommendations(ctx); slide_Projections(ctx); slide_ThankYou(ctx);
 }
 
@@ -1753,6 +1795,41 @@ function slide_SalesByLocation(ctx) {
   const totR = locs.reduce((s,l) => s + l.revenue, 0);
   const rows = locs.slice(0,8).map(l => [l.location, String(l.orders), fN(l.revenue), totR > 0 ? ((l.revenue/totR)*100).toFixed(1)+"%" : "—"]);
   tblFixed(s,PAD,52,[{label:"Location",w:302},{label:"Orders",w:106},{label:"Revenue (₹)",w:148},{label:"% of Total",w:108}],rows,28,30,C.navy);
+  ftr(s);
+}
+
+function slide_ShopifyCampaigns(ctx) {
+  const s = newSlide(ctx);
+  hdr(s,"SHOPIFY — CAMPAIGNS & ATTRIBUTION",ctx.M.currFull,C.blue);
+  const campaigns = ctx.sheetData.shopify.campaigns;
+  if (!campaigns || !campaigns.length) {
+    bx(s,PAD,70,SW-PAD*2,80,C.blueLight); bx(s,PAD,70,3,80,C.cyan);
+    tx(s,"No campaign data for " + ctx.M.currLabel + ".",PAD+14,80,SW-PAD*2-20,22,10,C.navy,true,"left");
+    tx(s,"Run 'Sync Shopify Data' from the dashboard to automatically populate this table with channel attribution.",PAD+14,104,SW-PAD*2-20,40,8.5,C.muted,false,"left");
+    ftr(s); return;
+  }
+  // Sub-header label
+  tx(s,"Channel attribution: Shopify orders mapped by landing site UTM + GA4 session data",PAD,46,SW-PAD*2,14,7.5,C.muted,false,"left");
+  const rows = campaigns.map(c => [
+    c.campaign,
+    c.source,
+    c.sessions > 0 ? String(c.sessions) : "—",
+    String(Math.round(c.orders)),
+    fN(c.revenue),
+    c.convRate > 0 ? parseFloat(c.convRate).toFixed(1) + "%" : (c.sessions > 0 ? "< 1%" : "—")
+  ]);
+  tblFixed(s,PAD,58,
+    [{label:"Campaign",w:234},{label:"Channel / Source",w:148},{label:"Sessions",w:88},{label:"Orders",w:72},{label:"Revenue (₹)",w:96},{label:"Conv Rate",w:78}],
+    rows,28,28,C.navy);
+  // Summary bar at the bottom
+  const totOrders = campaigns.reduce((s,c) => s + Math.round(c.orders), 0);
+  const totRevenue = campaigns.reduce((s,c) => s + c.revenue, 0);
+  const totSessions = campaigns.reduce((s,c) => s + c.sessions, 0);
+  const avgConv = totSessions > 0 ? parseFloat(((totOrders / totSessions) * 100).toFixed(1)) : 0;
+  const sumY = 230;
+  bx(s,PAD,sumY,SW-PAD*2,28,C.blueLight); bx(s,PAD,sumY,SW-PAD*2,2,C.navy);
+  const sumText = "Total: " + fN(totRevenue) + " revenue  |  " + totOrders + " orders  |  " + (totSessions > 0 ? totSessions + " sessions  |  " + avgConv + "% avg conv rate" : "Sessions data from GA4 sync");
+  tx(s,sumText,PAD+10,sumY+4,SW-PAD*2-20,20,8,C.navy,true,"left");
   ftr(s);
 }
 
@@ -2107,12 +2184,12 @@ function serverSyncShopify(clientKey, monthLabel) {
     
     // Sync current month (full sync: summary, products, locations)
     Logger.log("  Syncing current month: " + M.currLabel);
-    _syncShopifyMonthData(shop, token, sheetId, M.currLabel, M.currStart, M.currEnd, true);
+    _syncShopifyMonthData(shop, token, sheetId, M.currLabel, M.currStart, M.currEnd, true, c);
 
     // Sync previous month (only summary needed for MoM comparisons)
     Logger.log("  Syncing previous month: " + M.prevLabel);
     try {
-      _syncShopifyMonthData(shop, token, sheetId, M.prevLabel, M.prevStart, M.prevEnd, false);
+      _syncShopifyMonthData(shop, token, sheetId, M.prevLabel, M.prevStart, M.prevEnd, false, c);
     } catch(pe) {
       Logger.log("  ⚠️ Previous month Shopify sync skipped/failed: " + pe.message);
     }
@@ -2124,10 +2201,10 @@ function serverSyncShopify(clientKey, monthLabel) {
   }
 }
 
-function _syncShopifyMonthData(shopDomain, accessToken, sheetId, monthLabel, dateStart, dateEnd, syncAll) {
+function _syncShopifyMonthData(shopDomain, accessToken, sheetId, monthLabel, dateStart, dateEnd, syncAll, clientObj) {
   // Fetch orders from Shopify REST API
   // Use Asia/Kolkata timezone offset (+05:30) to match Google Sheet reports
-  let url = "https://" + shopDomain + "/admin/api/2024-04/orders.json?status=any&created_at_min=" + dateStart + "T00:00:00%2B05:30&created_at_max=" + dateEnd + "T23:59:59%2B05:30&limit=250";
+  let url = "https://" + shopDomain + "/admin/api/2025-01/orders.json?status=any&created_at_min=" + dateStart + "T00:00:00%2B05:30&created_at_max=" + dateEnd + "T23:59:59%2B05:30&limit=250";
   const headers = { "X-Shopify-Access-Token": accessToken, "Content-Type": "application/json" };
   let orders = [];
 
@@ -2244,6 +2321,263 @@ function _syncShopifyMonthData(shopDomain, accessToken, sheetId, monthLabel, dat
     topLocations.forEach(l => {
       locSheet.appendRow([monthLabel, l.location, l.orders, Math.round(l.revenue)]);
     });
+
+    // 4. Sync Shopify Campaigns & Attribution (extract UTMs, query GA4, merge)
+    _syncShopifyCampaigns(ss, shopDomain, accessToken, sheetId, monthLabel, dateStart, dateEnd, orders, clientObj);
+  }
+}
+
+function _extractUtmParams(landingSite, referringSite) {
+  let source = "Direct";
+  let medium = "None";
+  let campaign = "Organic / Direct";
+
+  if (landingSite) {
+    try {
+      const qIndex = landingSite.indexOf("?");
+      if (qIndex !== -1) {
+        const queryStr = landingSite.substring(qIndex + 1);
+        const pairs = queryStr.split("&");
+        const params = {};
+        pairs.forEach(pair => {
+          const parts = pair.split("=");
+          if (parts.length === 2) {
+            params[decodeURIComponent(parts[0]).toLowerCase()] = decodeURIComponent(parts[1]);
+          }
+        });
+        
+        if (params["utm_source"]) source = params["utm_source"];
+        if (params["utm_medium"]) medium = params["utm_medium"];
+        if (params["utm_campaign"]) campaign = params["utm_campaign"];
+      }
+    } catch(e) {
+      Logger.log("Error parsing landing site UTM: " + e.message);
+    }
+  }
+
+  if (source === "Direct" && referringSite) {
+    try {
+      const ref = referringSite.toLowerCase();
+      if (ref.includes("google")) {
+        source = "Google";
+        medium = "Organic Search";
+        campaign = "SEO";
+      } else if (ref.includes("facebook") || ref.includes("fb")) {
+        source = "Facebook";
+        medium = "Social Organic";
+        campaign = "Social Referral";
+      } else if (ref.includes("instagram") || ref.includes("ig")) {
+        source = "Instagram";
+        medium = "Social Organic";
+        campaign = "Social Referral";
+      } else if (ref.includes("youtube")) {
+        source = "YouTube";
+        medium = "Social Organic";
+        campaign = "Social Referral";
+      } else if (ref.includes("pinterest")) {
+        source = "Pinterest";
+        medium = "Social Organic";
+        campaign = "Social Referral";
+      } else {
+        const match = referringSite.match(/https?:\/\/([^\/]+)/i);
+        if (match && match[1]) {
+          source = match[1].replace("www.", "");
+          medium = "Referral";
+          campaign = "Web Referral";
+        }
+      }
+    } catch(e) {
+      Logger.log("Error parsing referring site: " + e.message);
+    }
+  }
+
+  return { source, medium, campaign };
+}
+
+function _syncShopifyCampaigns(ss, shopDomain, accessToken, sheetId, monthLabel, dateStart, dateEnd, orders, clientObj) {
+  let campSheet = ss.getSheetByName("Shopify_Campaigns");
+  if (!campSheet) {
+    campSheet = ss.insertSheet("Shopify_Campaigns");
+    campSheet.appendRow(["Shopify Campaign Performance & Attribution Report"]);
+    campSheet.appendRow(["This tab automatically maps Shopify conversions and revenue (via landing site UTMs) with GA4 traffic sessions."]);
+    campSheet.appendRow(["Month", "Campaign Name", "Channel / Source", "Sessions", "Orders", "Sales (₹)", "Conversion Rate (%)"]);
+    
+    campSheet.getRange("A1:G1").merge().setFontSize(14).setFontWeight("bold").setFontColor("#0D2B6E");
+    campSheet.getRange("A2:G2").merge().setFontSize(9).setFontStyle("italic").setFontColor("#546E7A");
+    campSheet.getRange("A3:G3").setFontWeight("bold").setBackgroundColor("#F8FAFD").setBorder(true, true, true, true, true, true);
+    SpreadsheetApp.flush();
+    Logger.log("✅ Automatically created missing 'Shopify_Campaigns' tab in client sheet.");
+  }
+
+  function normalizeCampaign(c) {
+    c = String(c || "").trim().toLowerCase();
+    if (!c || c === "(organic)" || c === "(direct)" || c === "(not set)" || c === "none" || c === "organic" || c === "direct" || c === "unspecified") {
+      return "organic / direct";
+    }
+    return c;
+  }
+
+  function normalizeSource(s) {
+    s = String(s || "").trim().toLowerCase();
+    if (s.includes("facebook") || s.includes("fb") || s.includes("meta") || s.includes("instagram") || s.includes("ig") || s.includes("social")) {
+      return "facebook/instagram";
+    }
+    if (s.includes("google") || s.includes("gads") || s.includes("adwords") || s.includes("cpc")) {
+      return "google";
+    }
+    if (s.includes("direct") || s.includes("none") || s === "") {
+      return "direct";
+    }
+    if (s.includes("email") || s.includes("klaviyo") || s.includes("newsletter")) {
+      return "email";
+    }
+    if (s.includes("whatsapp") || s.includes("wati")) {
+      return "whatsapp";
+    }
+    return s;
+  }
+
+  function displayNameCampaign(c) {
+    if (c === "organic / direct") return "Organic / Direct";
+    return c.split(/[_\-\s]+/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+  }
+
+  function displayNameSource(s) {
+    if (s === "facebook/instagram") return "Facebook / Instagram";
+    if (s === "google") return "Google Ads / Search";
+    if (s === "direct") return "Direct Traffic";
+    if (s === "email") return "Email Marketing";
+    if (s === "whatsapp") return "WhatsApp Broadcast";
+    return s.charAt(0).toUpperCase() + s.slice(1);
+  }
+
+  const shopifyMap = {};
+  orders.forEach(order => {
+    if (order.cancelled_at) return;
+    const subtotal = parseFloat(order.subtotal_price) || 0;
+    const utm = _extractUtmParams(order.landing_site, order.referring_site);
+    
+    const normCamp = normalizeCampaign(utm.campaign);
+    const normSrc = normalizeSource(utm.source);
+    const key = normCamp + "||" + normSrc;
+    
+    if (!shopifyMap[key]) {
+      shopifyMap[key] = { campaign: normCamp, source: normSrc, orders: 0, revenue: 0 };
+    }
+    shopifyMap[key].orders += 1;
+    shopifyMap[key].revenue += subtotal;
+  });
+
+  const ga4Map = {};
+  let ga4Enabled = clientObj && clientObj.ga4_property_id && String(clientObj.ga4_property_id).trim() !== "";
+  if (ga4Enabled) {
+    try {
+      const pid = String(clientObj.ga4_property_id).trim();
+      const resp = ga4Report(pid, {
+        dateRanges: [{ startDate: dateStart, endDate: dateEnd }],
+        dimensions: [{ name: "sessionCampaignName" }, { name: "sessionSourceMedium" }],
+        metrics: [{ name: "sessions" }]
+      });
+      
+      (resp.rows || []).forEach(row => {
+        const rawCamp = row.dimensionValues[0].value;
+        const rawSrcMed = row.dimensionValues[1].value;
+        const sessions = parseInt(row.metricValues[0].value) || 0;
+        
+        const normCamp = normalizeCampaign(rawCamp);
+        const sourcePart = rawSrcMed.split("/")[0].trim();
+        const normSrc = normalizeSource(sourcePart);
+        const key = normCamp + "||" + normSrc;
+        
+        if (!ga4Map[key]) {
+          ga4Map[key] = 0;
+        }
+        ga4Map[key] += sessions;
+      });
+    } catch(e) {
+      Logger.log("⚠️ GA4 Campaign query failed: " + e.message);
+    }
+  }
+
+  const mergedKeys = new Set([...Object.keys(shopifyMap), ...Object.keys(ga4Map)]);
+  const campaignList = [];
+  
+  mergedKeys.forEach(key => {
+    const parts = key.split("||");
+    const normCamp = parts[0];
+    const normSrc = parts[1];
+    
+    const shopData = shopifyMap[key] || { orders: 0, revenue: 0 };
+    const sessions = ga4Map[key] || 0;
+    const convRate = sessions > 0 ? parseFloat(((shopData.orders / sessions) * 100).toFixed(2)) : 0;
+    
+    if (sessions === 0 && shopData.orders === 0 && shopData.revenue === 0) return;
+    
+    campaignList.push({
+      campaign: displayNameCampaign(normCamp),
+      source: displayNameSource(normSrc),
+      sessions: sessions,
+      orders: shopData.orders,
+      revenue: Math.round(shopData.revenue),
+      convRate: convRate
+    });
+  });
+
+  campaignList.sort((a, b) => b.revenue - a.revenue || b.sessions - a.sessions);
+
+  const campData = campSheet.getDataRange().getValues();
+  for (let i = campData.length - 1; i >= 3; i--) {
+    if (String(campData[i][0]).trim() === monthLabel) {
+      campSheet.deleteRow(i + 1);
+    }
+  }
+
+  campaignList.slice(0, 8).forEach(c => {
+    campSheet.appendRow([monthLabel, c.campaign, c.source, c.sessions, c.orders, c.revenue, c.convRate + "%"]);
+  });
+}
+
+function serverTestShopifyConnection(clientKey) {
+  try {
+    const result = serverGetClientFull(clientKey);
+    if (!result.success) return { success: false, error: result.error };
+    const c = result.client;
+    
+    const token = c.shopify_access_token;
+    let shop = c.shopify_shop_name;
+    if (!token || !shop) {
+      return { success: false, error: "Shopify access token or shop name is missing for this client." };
+    }
+    
+    if (!shop.includes(".") && !shop.includes("myshopify.com")) {
+      shop = shop.trim() + ".myshopify.com";
+    }
+    
+    const url = "https://" + shop + "/admin/api/2025-01/shop.json";
+    const headers = { "X-Shopify-Access-Token": token, "Content-Type": "application/json" };
+    
+    const resp = UrlFetchApp.fetch(url, { headers: headers, muteHttpExceptions: true });
+    const responseCode = resp.getResponseCode();
+    const responseText = resp.getContentText();
+    
+    if (responseCode === 200) {
+      const data = JSON.parse(responseText);
+      return { 
+        success: true, 
+        message: "✅ Connection Succeeded!", 
+        shopName: data.shop?.name || "Unknown", 
+        domain: data.shop?.domain || shop, 
+        currency: data.shop?.currency || "Unknown",
+        timezone: data.shop?.iana_timezone || "Unknown"
+      };
+    } else {
+      return { 
+        success: false, 
+        error: "Shopify API returned HTTP " + responseCode + ": " + responseText 
+      };
+    }
+  } catch(e) {
+    return { success: false, error: e.message };
   }
 }
 
