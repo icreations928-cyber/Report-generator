@@ -1,353 +1,554 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Digifyce Report Dashboard</title>
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
-<?!= include('Stylesheet'); ?>
-</head>
-<body>
+<style>
+/* ── RESET & BASE ─────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-<!-- LOGIN SCREEN -->
-<div id="loginScreen" class="login-screen">
-  <div class="login-card">
-    <div class="login-logo">
-      <div class="logo-mark">D</div>
-      <span class="logo-text">digifyce</span>
-    </div>
-    <h2 class="login-title">Report Dashboard</h2>
-    <p class="login-sub">Sign in to your account</p>
-    <div id="loginError" class="alert alert-error" style="display:none"></div>
-    <div class="form-group">
-      <label class="form-label">Username</label>
-      <input type="text" id="loginUsername" class="form-input" placeholder="Enter username" autocomplete="username">
-    </div>
-    <div class="form-group">
-      <label class="form-label">Password</label>
-      <div class="input-eye-wrap">
-        <input type="password" id="loginPassword" class="form-input" placeholder="Enter password" autocomplete="current-password">
-        <button class="eye-btn" onclick="togglePwd('loginPassword',this)">Show</button>
-      </div>
-    </div>
-    <button class="btn btn-primary btn-full" onclick="doLogin()" id="loginBtn">
-      <span>Sign In</span>
-    </button>
-  </div>
-</div>
+:root {
+  --blue:        #1565C0;
+  --blue-mid:    #1976D2;
+  --blue-light:  #E3F2FD;
+  --blue-pale:   #BBDEFB;
+  --dark:        #0D1B2A;
+  --mid:         #546E7A;
+  --muted:       #90A4AE;
+  --line:        #E0E7EF;
+  --white:       #FFFFFF;
+  --bg:          #F4F7FB;
+  --sidebar-w:   240px;
+  --green:       #2E7D32;
+  --green-light: #E8F5E9;
+  --red:         #C62828;
+  --red-light:   #FFEBEE;
+  --orange:      #E65100;
+  --orange-light:#FFF3E0;
+  --shadow:      0 2px 12px rgba(21,101,192,0.10);
+  --shadow-lg:   0 8px 32px rgba(21,101,192,0.15);
+  --radius:      12px;
+  --radius-sm:   8px;
+  font-family: 'DM Sans', sans-serif;
+}
 
-<!-- MAIN APP -->
-<div id="mainApp" style="display:none">
+body { background: var(--bg); color: var(--dark); min-height: 100vh; }
 
-  <!-- SIDEBAR -->
-  <aside class="sidebar" id="sidebar">
-    <div class="sidebar-header">
-      <div class="logo-mark sm">D</div>
-      <span class="logo-text">digifyce</span>
-    </div>
-    <nav class="sidebar-nav">
-      <a class="nav-item active" onclick="showPage('dashboard')" id="nav-dashboard">
-        <span class="nav-icon">&#9632;</span> Dashboard
-      </a>
-      <a class="nav-item" onclick="showPage('clients')" id="nav-clients">
-        <span class="nav-icon">&#9672;</span> Clients
-      </a>
-      <a class="nav-item" onclick="showPage('generate')" id="nav-generate">
-        <span class="nav-icon">&#9654;</span> Generate Report
-      </a>
-      <a class="nav-item" onclick="showPage('logs')" id="nav-logs">
-        <span class="nav-icon">&#9636;</span> Report Logs
-      </a>
-      <a class="nav-item owner-only" onclick="showPage('users')" id="nav-users" style="display:none">
-        <span class="nav-icon">&#9673;</span> Users
-      </a>
-      <a class="nav-item owner-only" onclick="showPage('approvals')" id="nav-approvals" style="display:none">
-        <span class="nav-icon">&#10022;</span> Approvals
-        <span class="badge" id="approvalBadge" style="display:none">0</span>
-      </a>
-    </nav>
-    <div class="sidebar-footer">
-      <div class="user-chip">
-        <div class="user-avatar" id="userAvatar">?</div>
-        <div>
-          <div class="user-name" id="userName">--</div>
-          <div class="user-role" id="userRole">--</div>
-        </div>
-      </div>
-      <button class="btn-logout" onclick="doLogout()">Sign out</button>
-    </div>
-  </aside>
+/* ── LOGIN ────────────────────────────────────────────────── */
+.login-screen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #0D1B2A 0%, #1565C0 100%);
+  padding: 24px;
+}
 
-  <!-- MAIN CONTENT -->
-  <main class="main-content">
-    <div class="topbar">
-      <button class="hamburger" onclick="toggleSidebar()">&#9776;</button>
-      <div class="topbar-title" id="topbarTitle">Dashboard</div>
-      <div class="topbar-right">
-        <span class="month-chip" id="currentMonthChip">--</span>
-      </div>
-    </div>
+.login-card {
+  background: var(--white);
+  border-radius: var(--radius);
+  padding: 48px 40px;
+  width: 100%;
+  max-width: 400px;
+  box-shadow: var(--shadow-lg);
+  animation: fadeUp 0.4s ease;
+}
 
-    <!-- Flash message -->
-    <div id="flashMsg" class="flash-msg" style="display:none"></div>
+@keyframes fadeUp {
+  from { opacity:0; transform:translateY(16px); }
+  to   { opacity:1; transform:translateY(0); }
+}
 
-    <!-- PAGE: DASHBOARD -->
-    <div id="page-dashboard" class="page active">
-      <div class="page-header">
-        <div>
-          <h1 class="page-title">Dashboard</h1>
-          <p class="page-sub">Overview of all your client accounts</p>
-        </div>
-        <button class="btn btn-primary" onclick="showPage('generate')">Generate Report</button>
-      </div>
-      <div class="stats-row">
-        <div class="stat-card"><div class="stat-val" id="statClients">--</div><div class="stat-lbl">Total Clients</div></div>
-        <div class="stat-card"><div class="stat-val" id="statReports">--</div><div class="stat-lbl">Reports Generated</div></div>
-        <div class="stat-card"><div class="stat-val" id="statSuccess">--</div><div class="stat-lbl">Successful</div></div>
-        <div class="stat-card"><div class="stat-val" id="statFailed">--</div><div class="stat-lbl">Failed</div></div>
-      </div>
-      <div class="section-header">
-        <h2 class="section-title">Your Clients</h2>
-      </div>
-      <div id="clientCards" class="client-grid">
-        <div class="loading-state">Loading clients...</div>
-      </div>
-    </div>
+.login-logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 28px;
+}
 
-    <!-- PAGE: CLIENTS -->
-    <div id="page-clients" class="page">
-      <div class="page-header">
-        <h1 class="page-title">Clients</h1>
-        <button class="btn btn-primary" onclick="showAddClient()">+ Add Client</button>
-      </div>
-      <div id="clientsTable" class="table-wrap">
-        <div class="loading-state">Loading...</div>
-      </div>
-    </div>
+.logo-mark {
+  width: 40px; height: 40px;
+  background: var(--blue);
+  border-radius: 10px;
+  color: var(--white);
+  font-weight: 700;
+  font-size: 20px;
+  display: flex; align-items: center; justify-content: center;
+}
+.logo-mark.sm { width:32px; height:32px; font-size:16px; border-radius:8px; }
 
-    <!-- PAGE: ADD / EDIT CLIENT FORM -->
-    <div id="page-clientform" class="page">
-      <div class="page-header">
-        <button class="btn-back" onclick="showPage('clients')">Back to Clients</button>
-        <h1 class="page-title" id="clientFormTitle">Add Client</h1>
-      </div>
-      <div class="form-card">
-        <input type="hidden" id="editClientKey">
-        <input type="hidden" id="editMode" value="add">
+.logo-text {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--dark);
+  letter-spacing: -0.5px;
+}
 
-        <div class="form-section-title">Basic Info</div>
-        <div class="form-row">
-          <div class="form-group">
-            <label class="form-label">Client Key <span class="req">*</span></label>
-            <input type="text" id="fc_client_key" class="form-input" placeholder="e.g. BlackApe (no spaces)">
-            <span class="form-hint">Unique identifier. No spaces. Cannot be changed later.</span>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Brand Name <span class="req">*</span></label>
-            <input type="text" id="fc_name" class="form-input" placeholder="e.g. Black Ape Apparels">
-          </div>
-        </div>
-        <div class="form-row">
-          <div class="form-group">
-            <label class="form-label">Agent Email <span class="req">*</span></label>
-            <input type="email" id="fc_agent_email" class="form-input" placeholder="agent@digifyce.com">
-          </div>
-          <div class="form-group">
-            <label class="form-label">Client Logo Drive File ID</label>
-            <input type="text" id="fc_client_logo_id" class="form-input" placeholder="Google Drive File ID (optional)">
-          </div>
-        </div>
+.login-title { font-size: 22px; font-weight: 700; color: var(--dark); margin-bottom: 4px; }
+.login-sub   { font-size: 14px; color: var(--muted); margin-bottom: 28px; }
 
-        <div class="form-section-title">
-          Google Sheet
-          <span class="optional-tag">Leave blank — use Create Sheet button after saving</span>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Sheet ID <span class="optional-tag">optional</span></label>
-          <input type="text" id="fc_sheet_id" class="form-input" placeholder="Auto-filled when you click Create Sheet, or paste manually">
-          <span class="form-hint">From the Sheet URL: docs.google.com/spreadsheets/d/SHEET_ID/edit</span>
-        </div>
+/* ── LAYOUT ───────────────────────────────────────────────── */
+#mainApp { display: flex; min-height: 100vh; }
 
-        <div class="form-section-title">Meta Ads</div>
-        <div class="form-group">
-          <label class="form-label">Access Token <span class="req">*</span></label>
-          <div class="input-eye-wrap">
-            <input type="password" id="fc_meta_access_token" class="form-input" placeholder="EAA...">
-            <button class="eye-btn" onclick="togglePwd('fc_meta_access_token',this)">Show</button>
-          </div>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Ad Account IDs <span class="req">*</span></label>
-          <input type="text" id="fc_meta_ad_account_ids" class="form-input" placeholder="act_111111,act_222222,act_333333">
-          <span class="form-hint">Comma separated if multiple accounts.</span>
-        </div>
+.sidebar {
+  width: var(--sidebar-w);
+  background: var(--dark);
+  display: flex;
+  flex-direction: column;
+  position: fixed;
+  top: 0; left: 0; bottom: 0;
+  z-index: 100;
+  transition: transform 0.3s ease;
+}
 
-        <div class="form-section-title">Google Analytics 4</div>
-        <div class="form-group">
-          <label class="form-label">GA4 Property ID <span class="req">*</span></label>
-          <input type="text" id="fc_ga4_property_id" class="form-input" placeholder="e.g. 514241136">
-          <span class="form-hint">Numbers only. Found in GA4 Admin → Property Settings.</span>
-        </div>
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 24px 20px 16px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.sidebar-header .logo-text { color: var(--white); font-size: 18px; }
 
-        <div class="form-section-title">Search Console</div>
-        <div class="form-group">
-          <label class="form-label">GSC Site URL <span class="req">*</span></label>
-          <input type="text" id="fc_gsc_site_url" class="form-input" placeholder="sc-domain:clientdomain.com">
-          <span class="form-hint">Exactly as shown in Search Console.</span>
-        </div>
+.sidebar-nav {
+  flex: 1;
+  padding: 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+}
 
-        <div class="form-section-title">Google Ads <span class="optional-tag">Optional</span></div>
-        <div class="form-row">
-          <div class="form-group">
-            <label class="form-label">Enabled?</label>
-            <select id="fc_google_ads_enabled" class="form-input">
-              <option value="false">No</option>
-              <option value="true">Yes</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Customer ID</label>
-            <input type="text" id="fc_google_ads_customer_id" class="form-input" placeholder="XXX-XXX-XXXX">
-          </div>
-        </div>
-        <div class="form-row">
-          <div class="form-group">
-            <label class="form-label">Developer Token</label>
-            <input type="text" id="fc_google_ads_dev_token" class="form-input" placeholder="Developer token">
-          </div>
-          <div class="form-group">
-            <label class="form-label">MCC ID</label>
-            <input type="text" id="fc_google_ads_mcc_id" class="form-input" placeholder="MCC customer ID">
-          </div>
-        </div>
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  color: rgba(255,255,255,0.6);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  text-decoration: none;
+  user-select: none;
+  position: relative;
+}
+.nav-item:hover  { background: rgba(255,255,255,0.08); color: var(--white); }
+.nav-item.active { background: var(--blue); color: var(--white); }
+.nav-icon        { font-size: 13px; width: 18px; text-align: center; }
 
-        <div class="form-actions">
-          <button class="btn btn-ghost" onclick="showPage('clients')">Cancel</button>
-          <button class="btn btn-primary" onclick="submitClientForm()" id="clientFormBtn">Save Client</button>
-        </div>
-      </div>
-    </div>
+.badge {
+  background: #E53935;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 20px;
+  padding: 1px 6px;
+  margin-left: auto;
+}
 
-    <!-- PAGE: GENERATE REPORT -->
-    <div id="page-generate" class="page">
-      <div class="page-header">
-        <h1 class="page-title">Generate Report</h1>
-      </div>
-      <div class="generate-layout">
-        <div class="form-card">
-          <div class="form-section-title">Select Client</div>
-          <div class="form-group">
-            <label class="form-label">Client</label>
-            <select id="gen_client" class="form-input">
-              <option value="">-- Select a client --</option>
-              <option value="ALL">All Clients</option>
-            </select>
-          </div>
+.sidebar-footer {
+  padding: 16px;
+  border-top: 1px solid rgba(255,255,255,0.08);
+}
+.user-chip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.user-avatar {
+  width: 34px; height: 34px;
+  background: var(--blue);
+  border-radius: 50%;
+  color: #fff;
+  font-weight: 700;
+  font-size: 14px;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.user-name { font-size: 13px; font-weight: 600; color: #fff; }
+.user-role { font-size: 11px; color: rgba(255,255,255,0.4); text-transform: uppercase; letter-spacing: 0.5px; }
 
-          <div class="form-section-title">Report Month</div>
-          <div class="form-row">
-            <div class="form-group">
-              <label class="form-label">Mode</label>
-              <select id="gen_mode" class="form-input" onchange="toggleMonthInput()">
-                <option value="auto">Auto (last month)</option>
-                <option value="manual">Manual (pick month)</option>
-              </select>
-            </div>
-            <div class="form-group" id="gen_month_wrap" style="display:none">
-              <label class="form-label">Month and Year</label>
-              <input type="month" id="gen_month" class="form-input">
-              <span class="form-hint">e.g. select January 2026</span>
-            </div>
-          </div>
+.btn-logout {
+  width: 100%;
+  background: rgba(255,255,255,0.08);
+  border: none;
+  border-radius: var(--radius-sm);
+  color: rgba(255,255,255,0.6);
+  font-size: 13px;
+  padding: 8px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.2s;
+}
+.btn-logout:hover { background: rgba(255,255,255,0.14); color: #fff; }
 
-          <div class="form-actions">
-            <button class="btn btn-primary btn-full" onclick="generateReport()" id="genBtn">
-              Generate Report
-            </button>
-          </div>
-        </div>
+.main-content {
+  margin-left: var(--sidebar-w);
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
 
-        <div id="genResults" style="display:none">
-          <div class="results-header">Results</div>
-          <div id="genResultsInner"></div>
-        </div>
-      </div>
-    </div>
+/* ── TOPBAR ───────────────────────────────────────────────── */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 28px;
+  background: var(--white);
+  border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  z-index: 50;
+}
+.hamburger {
+  display: none;
+  background: none;
+  border: none;
+  font-size: 20px;
+  cursor: pointer;
+  color: var(--dark);
+}
+.topbar-title { font-size: 16px; font-weight: 600; color: var(--dark); flex: 1; }
+.month-chip {
+  background: var(--blue-light);
+  color: var(--blue);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: 20px;
+}
 
-    <!-- PAGE: REPORT LOGS -->
-    <div id="page-logs" class="page">
-      <div class="page-header">
-        <h1 class="page-title">Report Logs</h1>
-        <button class="btn btn-ghost sm" onclick="loadLogs()">Refresh</button>
-      </div>
-      <div id="logsTable" class="table-wrap">
-        <div class="loading-state">Loading logs...</div>
-      </div>
-    </div>
+/* ── PAGES ────────────────────────────────────────────────── */
+.page { display: none; padding: 28px; animation: fadeUp 0.25s ease; }
+.page.active { display: block; }
 
-    <!-- PAGE: USERS (owner only) -->
-    <div id="page-users" class="page">
-      <div class="page-header">
-        <h1 class="page-title">Users</h1>
-        <button class="btn btn-primary" onclick="showAddUser()">+ Add User</button>
-      </div>
-      <div id="usersTable" class="table-wrap">
-        <div class="loading-state">Loading...</div>
-      </div>
+.page-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+}
+.page-title { font-size: 24px; font-weight: 700; color: var(--dark); flex: 1; }
+.page-sub   { font-size: 14px; color: var(--muted); margin-top: 2px; }
 
-      <!-- Add user modal -->
-      <div id="userModal" class="modal" style="display:none">
-        <div class="modal-card">
-          <div class="modal-header">
-            <span id="userModalTitle">Add User</span>
-            <button class="modal-close" onclick="closeUserModal()">X</button>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Username</label>
-            <input type="text" id="um_username" class="form-input">
-          </div>
-          <div class="form-group">
-            <label class="form-label">Full Name</label>
-            <input type="text" id="um_name" class="form-input">
-          </div>
-          <div class="form-group">
-            <label class="form-label">Password</label>
-            <input type="password" id="um_password" class="form-input">
-          </div>
-          <div class="form-group">
-            <label class="form-label">Role</label>
-            <select id="um_role" class="form-input">
-              <option value="manager">Manager</option>
-              <option value="owner">Owner</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Assigned Clients</label>
-            <input type="text" id="um_clients" class="form-input" placeholder="BlackApe,Client2 or ALL">
-            <span class="form-hint">Comma separated client keys. Use ALL for full access.</span>
-          </div>
-          <div class="form-actions">
-            <button class="btn btn-ghost" onclick="closeUserModal()">Cancel</button>
-            <button class="btn btn-primary" onclick="saveUser()">Save User</button>
-          </div>
-        </div>
-      </div>
-    </div>
+/* ── STATS ROW ────────────────────────────────────────────── */
+.stats-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-bottom: 28px;
+}
+.stat-card {
+  background: var(--white);
+  border-radius: var(--radius);
+  padding: 20px 24px;
+  box-shadow: var(--shadow);
+  border-top: 3px solid var(--blue);
+}
+.stat-val { font-size: 28px; font-weight: 700; color: var(--blue); font-family: 'DM Mono', monospace; }
+.stat-lbl { font-size: 12px; color: var(--muted); margin-top: 4px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px; }
 
-    <!-- PAGE: APPROVALS (owner only) -->
-    <div id="page-approvals" class="page">
-      <div class="page-header">
-        <h1 class="page-title">Pending Approvals</h1>
-        <button class="btn btn-ghost sm" onclick="loadApprovals()">Refresh</button>
-      </div>
-      <div id="approvalsTable" class="table-wrap">
-        <div class="loading-state">Loading...</div>
-      </div>
-    </div>
+/* ── CLIENT GRID ──────────────────────────────────────────── */
+.client-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+.client-card {
+  background: var(--white);
+  border-radius: var(--radius);
+  padding: 20px;
+  box-shadow: var(--shadow);
+  border-left: 4px solid var(--blue);
+  transition: box-shadow 0.2s, transform 0.2s;
+}
+.client-card:hover { box-shadow: var(--shadow-lg); transform: translateY(-2px); }
+.client-card-name  { font-size: 15px; font-weight: 700; color: var(--dark); margin-bottom: 4px; }
+.client-card-key   { font-size: 11px; color: var(--muted); font-family: 'DM Mono', monospace; margin-bottom: 12px; }
+.client-card-meta  { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+.client-tag {
+  font-size: 10px; font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 20px;
+  background: var(--blue-light);
+  color: var(--blue);
+  text-transform: uppercase;
+}
+.client-tag.green { background: var(--green-light); color: var(--green); }
+.client-card-actions { display: flex; gap: 8px; }
 
-  </main>
-</div>
+/* ── SECTION HEADER ───────────────────────────────────────── */
+.section-header {
+  display: flex;
+  align-items: center;
+  margin-bottom: 16px;
+}
+.section-title { font-size: 16px; font-weight: 700; color: var(--dark); flex: 1; }
 
-<?!= include('JavaScript'); ?>
-</body>
-</html>
+/* ── BUTTONS ──────────────────────────────────────────────── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 20px;
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  transition: all 0.2s;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.btn-primary  { background: var(--blue); color: #fff; }
+.btn-primary:hover:not(:disabled) { background: var(--blue-mid); }
+.btn-ghost    { background: transparent; color: var(--blue); border: 1.5px solid var(--blue); }
+.btn-ghost:hover:not(:disabled) { background: var(--blue-light); }
+.btn-danger   { background: var(--red); color: #fff; }
+.btn-danger:hover:not(:disabled) { background: #B71C1C; }
+.btn-success  { background: var(--green); color: #fff; }
+.btn.sm       { padding: 6px 14px; font-size: 12px; }
+.btn-full     { width: 100%; justify-content: center; }
+.btn-back     { background: none; border: none; color: var(--blue); font-size: 14px; font-weight: 600; cursor: pointer; padding: 0; font-family: inherit; }
+.btn-icon     { background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; font-size: 13px; cursor: pointer; transition: all 0.2s; font-family: inherit; }
+.btn-icon:hover { background: var(--blue-light); border-color: var(--blue); }
+
+/* ── FORMS ────────────────────────────────────────────────── */
+.form-card {
+  background: var(--white);
+  border-radius: var(--radius);
+  padding: 28px;
+  box-shadow: var(--shadow);
+  max-width: 800px;
+}
+.form-section-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--blue);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin: 24px 0 14px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--blue-light);
+}
+.form-section-title:first-child { margin-top: 0; }
+.form-row   { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.form-group { display: flex; flex-direction: column; gap: 6px; margin-bottom: 4px; }
+.form-label { font-size: 13px; font-weight: 600; color: var(--dark); }
+.form-hint  { font-size: 11px; color: var(--muted); }
+.req        { color: var(--red); }
+.optional-tag { font-size: 10px; font-weight: 400; color: var(--muted); text-transform: none; letter-spacing: 0; margin-left: 6px; background: var(--line); padding: 1px 6px; border-radius: 10px; }
+
+.form-input {
+  width: 100%;
+  padding: 10px 14px;
+  border: 1.5px solid var(--line);
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--dark);
+  background: var(--white);
+  outline: none;
+  transition: border 0.2s;
+}
+.form-input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(21,101,192,0.10); }
+.form-input::placeholder { color: var(--muted); }
+
+.input-eye-wrap { position: relative; }
+.input-eye-wrap .form-input { padding-right: 42px; }
+.eye-btn {
+  position: absolute;
+  right: 10px; top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  color: var(--muted);
+  padding: 0;
+}
+
+.form-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  margin-top: 28px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+
+/* ── TABLES ───────────────────────────────────────────────── */
+.table-wrap { background: var(--white); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
+table { width: 100%; border-collapse: collapse; }
+thead th {
+  background: var(--dark);
+  color: rgba(255,255,255,0.8);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 12px 16px;
+  text-align: left;
+}
+tbody td { padding: 12px 16px; font-size: 13px; color: var(--dark); border-bottom: 1px solid var(--line); vertical-align: middle; }
+tbody tr:last-child td { border-bottom: none; }
+tbody tr:hover { background: var(--bg); }
+.code-cell { font-family: 'DM Mono', monospace; font-size: 12px; color: var(--blue); }
+
+/* ── ALERTS ───────────────────────────────────────────────── */
+.alert {
+  padding: 12px 16px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 16px;
+}
+.alert-error   { background: var(--red-light);    color: var(--red);    border-left: 3px solid var(--red);   }
+.alert-success { background: var(--green-light);  color: var(--green);  border-left: 3px solid var(--green); }
+.alert-info    { background: var(--blue-light);   color: var(--blue);   border-left: 3px solid var(--blue);  }
+.alert-warning { background: var(--orange-light); color: var(--orange); border-left: 3px solid var(--orange);}
+
+.flash-msg {
+  margin: 0 28px 0;
+  border-radius: var(--radius-sm);
+  padding: 12px 18px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+/* ── GENERATE PAGE ────────────────────────────────────────── */
+.generate-layout { display: flex; flex-direction: column; gap: 24px; max-width: 600px; }
+
+.results-header {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--dark);
+  margin-bottom: 12px;
+}
+.result-item {
+  background: var(--white);
+  border-radius: var(--radius);
+  padding: 16px 20px;
+  margin-bottom: 10px;
+  box-shadow: var(--shadow);
+  border-left: 4px solid var(--blue);
+}
+.result-item.success { border-left-color: var(--green); }
+.result-item.failed  { border-left-color: var(--red);   }
+.result-name   { font-size: 14px; font-weight: 700; color: var(--dark); margin-bottom: 6px; }
+.result-links  { display: flex; gap: 10px; flex-wrap: wrap; }
+.result-link {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--blue);
+  text-decoration: none;
+  background: var(--blue-light);
+  padding: 4px 12px;
+  border-radius: 20px;
+  transition: all 0.2s;
+}
+.result-link:hover { background: var(--blue); color: #fff; }
+.result-link.pptx  { background: var(--green-light); color: var(--green); }
+.result-link.pptx:hover { background: var(--green); color: #fff; }
+.result-error  { font-size: 12px; color: var(--red); margin-top: 4px; }
+
+/* ── STATUS BADGES ────────────────────────────────────────── */
+.status-badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 20px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.status-badge.success { background: var(--green-light); color: var(--green); }
+.status-badge.failed  { background: var(--red-light);   color: var(--red);   }
+.status-badge.pending { background: var(--orange-light); color: var(--orange); }
+.status-badge.approved{ background: var(--green-light); color: var(--green); }
+.status-badge.rejected{ background: var(--red-light);   color: var(--red);   }
+
+/* ── MODAL ────────────────────────────────────────────────── */
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(13,27,42,0.6);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  backdrop-filter: blur(2px);
+}
+.modal-card {
+  background: var(--white);
+  border-radius: var(--radius);
+  padding: 28px;
+  width: 100%;
+  max-width: 480px;
+  box-shadow: var(--shadow-lg);
+  animation: fadeUp 0.25s ease;
+}
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--dark);
+  margin-bottom: 20px;
+}
+.modal-close {
+  background: none;
+  border: none;
+  font-size: 18px;
+  cursor: pointer;
+  color: var(--muted);
+  padding: 0;
+}
+.modal-close:hover { color: var(--dark); }
+
+/* ── LOADING / EMPTY ──────────────────────────────────────── */
+.loading-state {
+  padding: 48px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 14px;
+}
+.empty-state {
+  padding: 48px;
+  text-align: center;
+  color: var(--muted);
+}
+.empty-state-icon { font-size: 36px; margin-bottom: 12px; }
+.empty-state-text { font-size: 14px; }
+
+/* ── SPINNER ──────────────────────────────────────────────── */
+.spinner {
+  width: 18px; height: 18px;
+  border: 2px solid rgba(255,255,255,0.4);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  display: inline-block;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── RESPONSIVE ───────────────────────────────────────────── */
+@media (max-width: 768px) {
+  .sidebar { transform: translateX(-100%); }
+  .sidebar.open { transform: translateX(0); }
+  .main-content { margin-left: 0; }
+  .hamburger { display: block; }
+  .stats-row { grid-template-columns: 1fr 1fr; }
+  .form-row  { grid-template-columns: 1fr; }
+  .page { padding: 16px; }
+}
+@media (max-width: 480px) {
+  .stats-row { grid-template-columns: 1fr; }
+  .login-card { padding: 32px 24px; }
+}
+</style>

@@ -56,7 +56,7 @@ function initSystemSheets() {
   try {
     const ss = getSystemSheet();
     getOrCreateTab(ss, "_Users",        ["username","password_hash","name","role","assigned_clients","created_at","is_active"]);
-    getOrCreateTab(ss, "_Clients",      ["client_key","name","agent_email","client_logo_id","sheet_id","meta_access_token","meta_ad_account_ids","google_ads_enabled","google_ads_dev_token","google_ads_customer_id","google_ads_mcc_id","ga4_property_id","gsc_site_url","created_at","updated_at","is_active"]);
+    getOrCreateTab(ss, "_Clients",      ["client_key","name","agent_email","client_logo_id","sheet_id","meta_access_token","meta_ad_account_ids","google_ads_enabled","google_ads_dev_token","google_ads_customer_id","google_ads_mcc_id","ga4_property_id","gsc_site_url","shopify_enabled","shopify_access_token","shopify_shop_name","created_at","updated_at","is_active"]);
     getOrCreateTab(ss, "_ReportLogs",   ["id","client_key","client_name","month_label","generated_by","status","slides_url","pptx_url","error_msg","generated_at"]);
     getOrCreateTab(ss, "_EditRequests", ["id","client_key","requested_by","field_changes","status","requested_at","reviewed_at","reviewed_by"]);
     const usersSheet = ss.getSheetByName("_Users");
@@ -177,6 +177,7 @@ function serverGetClients(userRole, userClients) {
     let rows = data.slice(1).map(row => {
       const obj = {}; hdrs.forEach((h,i) => obj[h] = row[i]);
       obj.meta_access_token = obj.meta_access_token ? obj.meta_access_token.slice(0,8) + "••••••••" : "";
+      obj.shopify_access_token = obj.shopify_access_token ? obj.shopify_access_token.slice(0,8) + "••••••••" : "";
       return obj;
     }).filter(r => r.is_active !== false && r.is_active !== "FALSE" && r.is_active !== false);
     if (userRole !== "owner") {
@@ -216,7 +217,9 @@ function serverSaveClient(clientData, currentUserRole) {
       clientData.meta_access_token, clientData.meta_ad_account_ids,
       clientData.google_ads_enabled || false, clientData.google_ads_dev_token || "",
       clientData.google_ads_customer_id || "", clientData.google_ads_mcc_id || "",
-      clientData.ga4_property_id, clientData.gsc_site_url, now, now, true
+      clientData.ga4_property_id, clientData.gsc_site_url,
+      clientData.shopify_enabled || false, clientData.shopify_access_token || "",
+      clientData.shopify_shop_name || "", now, now, true
     ]);
     return { success: true };
   } catch(e) { return { success: false, error: e.message }; }
@@ -335,25 +338,11 @@ function serverGenerateReport(clientKey, month, generatedBy, userRole, userClien
       return { success: false, error: "GA4 Property ID is missing for client '" + c.name + "'." };
     }
 
-    const CLIENT = {
-      clientKey:          clientKey,
-      name:               c.name,
-      agentEmail:         c.agent_email,
-      digifyceLogoFileId: DIGIFYCE_LOGO_ID,
-      clientLogoFileId:   c.client_logo_id || "",
-      sheetId:            c.sheet_id,
-      meta: {
-        accessToken:  c.meta_access_token,
-        adAccountIds: String(c.meta_ad_account_ids).split(",").map(s => s.trim()).filter(s => s)
-      },
-      googleAds: {
-        enabled:         c.google_ads_enabled === true || c.google_ads_enabled === "TRUE",
-        developerToken:  c.google_ads_dev_token || "",
-        customerId:      c.google_ads_customer_id || "",
-        managerCustomerId: c.google_ads_mcc_id || ""
-      },
-      ga4: { propertyId: c.ga4_property_id },
-      gsc: { siteUrl:    c.gsc_site_url },
+      shopify: {
+        enabled:         c.shopify_enabled === true || c.shopify_enabled === "TRUE",
+        accessToken:     c.shopify_access_token || "",
+        shopName:        c.shopify_shop_name || ""
+      }
     };
 
     // Validate at least one ad account
@@ -362,6 +351,17 @@ function serverGenerateReport(clientKey, month, generatedBy, userRole, userClien
     }
 
     const M = getMonthConfig(month || "");
+
+    // Auto-sync Shopify data before running report
+    if (CLIENT.shopify.enabled) {
+      try {
+        Logger.log("  [Shopify] Syncing data for " + CLIENT.name + " (" + M.currLabel + ")...");
+        serverSyncShopify(CLIENT.clientKey, M.currLabel);
+      } catch (se) {
+        Logger.log("  ⚠️ Shopify Sync failed: " + se.message);
+      }
+    }
+
     const slideUrl = _runReportForClient(CLIENT, M);
     const fileId = slideUrl.split("/d/")[1].split("/")[0];
     moveFileToReportsFolder(fileId);
@@ -1902,4 +1902,174 @@ function resetAllClientSheets() {
       Logger.log(result.success ? "✅ " + result.message : "❌ " + result.error);
     }
   });
+}
+
+
+// ============================================================
+// SECTION 8 — SHOPIFY INTEGRATION SYNC ENGINE
+// ============================================================
+
+function serverSyncShopify(clientKey, monthLabel) {
+  try {
+    const result = serverGetClientFull(clientKey);
+    if (!result.success) throw new Error(result.error);
+    const c = result.client;
+
+    const enabled = c.shopify_enabled === true || c.shopify_enabled === "TRUE";
+    if (!enabled) return { success: false, error: "Shopify integration is not enabled for this client." };
+
+    const token = c.shopify_access_token;
+    let shop = c.shopify_shop_name;
+    if (!token || !shop) throw new Error("Shopify access token or shop name is missing.");
+
+    if (!shop.includes(".") && !shop.includes("myshopify.com")) {
+      shop = shop.trim() + ".myshopify.com";
+    }
+
+    const sheetId = c.sheet_id;
+    if (!sheetId) throw new Error("No Google Sheet linked to this client.");
+
+    // Parse target month (current month)
+    const M = getMonthConfig(monthLabel);
+    
+    // Sync current month (full sync: summary, products, locations)
+    Logger.log("  Syncing current month: " + M.currLabel);
+    _syncShopifyMonthData(shop, token, sheetId, M.currLabel, M.currStart, M.currEnd, true);
+
+    // Sync previous month (only summary needed for MoM comparisons)
+    Logger.log("  Syncing previous month: " + M.prevLabel);
+    try {
+      _syncShopifyMonthData(shop, token, sheetId, M.prevLabel, M.prevStart, M.prevEnd, false);
+    } catch(pe) {
+      Logger.log("  ⚠️ Previous month Shopify sync skipped/failed: " + pe.message);
+    }
+
+    return { success: true, message: "Shopify data successfully synchronized for " + monthLabel };
+  } catch(e) {
+    Logger.log("serverSyncShopify error: " + e.message);
+    return { success: false, error: e.message };
+  }
+}
+
+function _syncShopifyMonthData(shopDomain, accessToken, sheetId, monthLabel, dateStart, dateEnd, syncAll) {
+  // Fetch orders from Shopify REST API
+  // Use Asia/Kolkata timezone offset (+05:30) to match Google Sheet reports
+  let url = "https://" + shopDomain + "/admin/api/2024-04/orders.json?status=any&created_at_min=" + dateStart + "T00:00:00%2B05:30&created_at_max=" + dateEnd + "T23:59:59%2B05:30&limit=250";
+  const headers = { "X-Shopify-Access-Token": accessToken, "Content-Type": "application/json" };
+  let orders = [];
+
+  while (url) {
+    const resp = UrlFetchApp.fetch(url, { headers, muteHttpExceptions: true });
+    if (resp.getResponseCode() !== 200) {
+      throw new Error("Shopify API responded with code " + resp.getResponseCode() + ": " + resp.getContentText());
+    }
+    const data = JSON.parse(resp.getContentText());
+    orders = orders.concat(data.orders || []);
+
+    // Handle Link pagination header
+    const linkHeader = resp.getHeaders()["Link"] || resp.getHeaders()["link"];
+    url = null;
+    if (linkHeader) {
+      const match = linkHeader.match(/<([^>]+)>;\s*rel="next"/);
+      if (match) url = match[1];
+    }
+  }
+
+  // Aggregate stats
+  let grossSales = 0;
+  let totalOrders = 0;
+  let newCustomers = 0;
+  const productAgg = {};
+  const locationAgg = {};
+
+  orders.forEach(order => {
+    if (order.cancelled_at) return; // Skip cancelled orders
+
+    totalOrders++;
+    const subtotal = parseFloat(order.subtotal_price) || 0;
+    grossSales += subtotal;
+
+    // Check if customer is new (either orders_count == 1 or customer created in this month)
+    if (order.customer) {
+      const isNew = order.customer.orders_count === 1 || 
+                    (order.customer.created_at && order.customer.created_at.slice(0, 7) === order.created_at.slice(0, 7));
+      if (isNew) newCustomers++;
+    }
+
+    if (syncAll) {
+      // Product aggregation
+      (order.line_items || []).forEach(item => {
+        const name = String(item.title || "").trim();
+        const qty = parseInt(item.quantity) || 0;
+        const price = parseFloat(item.price) || 0;
+        if (!name) return;
+        if (!productAgg[name]) productAgg[name] = { name, orders: 0, revenue: 0 };
+        productAgg[name].orders += qty;
+        productAgg[name].revenue += qty * price;
+      });
+
+      // Location aggregation
+      const addr = order.shipping_address || order.billing_address || {};
+      const city = String(addr.city || "Unknown").trim();
+      const province = String(addr.province || "").trim();
+      const locName = province ? city + ", " + province : city;
+      if (!locationAgg[locName]) locationAgg[locName] = { location: locName, orders: 0, revenue: 0 };
+      locationAgg[locName].orders += 1;
+      locationAgg[locName].revenue += subtotal;
+    }
+  });
+
+  const ss = SpreadsheetApp.openById(sheetId);
+
+  // 1. Populate Shopify_Summary
+  const summarySheet = ss.getSheetByName("Shopify_Summary");
+  const summaryData = summarySheet.getDataRange().getValues();
+  let summaryRowIndex = -1;
+  for (let i = 3; i < summaryData.length; i++) {
+    if (String(summaryData[i][0]).trim() === monthLabel) {
+      summaryRowIndex = i + 1;
+      break;
+    }
+  }
+  const avgOrderValue = totalOrders > 0 ? Math.round(grossSales / totalOrders) : 0;
+  const newRow = [monthLabel, Math.round(grossSales), totalOrders, newCustomers, avgOrderValue];
+  if (summaryRowIndex >= 0) {
+    summarySheet.getRange(summaryRowIndex, 1, 1, 5).setValues([newRow]);
+  } else {
+    summarySheet.appendRow(newRow);
+  }
+
+  if (syncAll) {
+    // 2. Populate Shopify_Products
+    const prodSheet = ss.getSheetByName("Shopify_Products");
+    const prodData = prodSheet.getDataRange().getValues();
+    // Delete target month rows (bottom-up)
+    for (let i = prodData.length - 1; i >= 3; i--) {
+      if (String(prodData[i][0]).trim() === monthLabel) {
+        prodSheet.deleteRow(i + 1);
+      }
+    }
+    const topProducts = Object.values(productAgg)
+      .sort((a, b) => b.revenue - a.revenue)
+      .slice(0, 8);
+    topProducts.forEach(p => {
+      prodSheet.appendRow([monthLabel, p.name, p.orders, Math.round(p.revenue)]);
+    });
+
+    // 3. Populate Shopify_Locations
+    const locSheet = ss.getSheetByName("Shopify_Locations");
+    const locData = locSheet.getDataRange().getValues();
+    // Delete target month rows (bottom-up)
+    for (let i = locData.length - 1; i >= 3; i--) {
+      if (String(locData[i][0]).trim() === monthLabel) {
+        locSheet.deleteRow(i + 1);
+      }
+    }
+    const topLocations = Object.values(locationAgg)
+      .sort((a, b) => b.revenue - a.revenue)
+      .slice(0, 8);
+    topLocations.forEach(l => {
+      locSheet.appendRow([monthLabel, l.location, l.orders, Math.round(l.revenue)]);
+    });
+  }
 }
