@@ -414,6 +414,17 @@ function moveFileToReportsFolder(fileId) {
   Logger.log("  ℹ️ Folder move skipped (Drive API restricted).");
 }
 
+function _transferFileOwnership(fileId, emailAddress) {
+  try {
+    const file = DriveApp.getFileById(fileId);
+    file.addEditor(emailAddress);
+    file.setOwner(emailAddress);
+    Logger.log("  ✓ Ownership successfully transferred to: " + emailAddress);
+  } catch(e) {
+    Logger.log("  ⚠️ Could not transfer ownership to " + emailAddress + ": " + e.message);
+  }
+}
+
 // Run this to verify the folder is accessible
 function testReportsFolder() {
   try {
@@ -781,6 +792,11 @@ function _runReportForClient(CLIENT, M) {
   // Move to reports folder (only on first creation, not on updates)
   if (!existingId) {
     moveFileToReportsFolder(fileId);
+  }
+
+  // Transfer ownership if SHARE_EMAIL is configured
+  if (SHARE_EMAIL && SHARE_EMAIL.trim() !== "") {
+    _transferFileOwnership(fileId, SHARE_EMAIL);
   }
 
   Logger.log("  ✓ Done: https://docs.google.com/presentation/d/" + fileId);
