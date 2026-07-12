@@ -562,6 +562,22 @@ function serverCreateClientSheet(clientKey, clientName, currentUserRole, current
     const ss = SpreadsheetApp.create("Digifyce — " + clientName + " — Data Sheet");
     const ssId = ss.getId();
     const ssUrl = "https://docs.google.com/spreadsheets/d/" + ssId;
+
+    // Automatically share the new sheet as Editor with the agency email and agent email
+    try {
+      if (SHARE_EMAIL && SHARE_EMAIL.trim() !== "") {
+        ss.addEditor(SHARE_EMAIL);
+      }
+      const clientRes = serverGetClientFull(clientKey);
+      if (clientRes.success && clientRes.client.agent_email) {
+        const agent = clientRes.client.agent_email.trim();
+        if (agent !== "" && agent.toLowerCase() !== SHARE_EMAIL.toLowerCase()) {
+          ss.addEditor(agent);
+        }
+      }
+    } catch(se) {
+      Logger.log("⚠️ Could not share new sheet: " + se.message);
+    }
     const defaultSheet = ss.getSheets()[0];
     TAB_ORDER.forEach((tabName, idx) => {
       const sheet = idx === 0 ? (defaultSheet.setName(tabName), defaultSheet) : ss.insertSheet(tabName);
