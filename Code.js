@@ -2235,3 +2235,40 @@ function serverGetAuditLogs(currentUsername) {
     return data.slice(1).reverse().map(row => { const obj = {}; hdrs.forEach((h,i) => obj[h] = row[i]); return obj; });
   } catch(e) { return { error: e.message }; }
 }
+
+function getShopifyToken() {
+  const shopSubdomain = "hapliearth";
+  const clientId = "1078f5c230365f7499ba7b545932a355";
+  
+  // 1. Paste your Client Secret (from your Dev Dashboard Settings screen):
+  const clientSecret = "YOUR_CLIENT_SECRET_HERE"; 
+  
+  // 2. Paste the code you just copied from the URL bar:
+  const code = "YOUR_TEMP_CODE_HERE"; 
+  
+  const url = "https://" + shopSubdomain + ".myshopify.com/admin/oauth/access_token";
+  const payload = {
+    client_id: clientId,
+    client_secret: clientSecret,
+    code: code
+  };
+  
+  try {
+    const response = UrlFetchApp.fetch(url, {
+      method: "POST",
+      contentType: "application/json",
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    });
+    
+    const result = JSON.parse(response.getContentText());
+    if (result.access_token) {
+      Logger.log("✅ Success! Your permanent Shopify Access Token is:");
+      Logger.log(result.access_token);
+    } else {
+      Logger.log("❌ Failed: " + response.getContentText());
+    }
+  } catch(e) {
+    Logger.log("❌ Error: " + e.message);
+  }
+}
