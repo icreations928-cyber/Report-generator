@@ -388,8 +388,11 @@ function serverGenerateReport(clientKey, month, generatedBy, userClients) {
     // Access check
     const isOwner = verifyUserRole(generatedBy, "owner");
     if (!isOwner) {
-      const allowed = String(userClients).split(",").map(s => s.trim().toLowerCase());
-      if (!allowed.includes("all") && !allowed.includes(clientKey.toLowerCase())) return { success: false, error: "Access denied" };
+      const allowed = String(userClients || "").split(",").map(s => s.trim().toLowerCase());
+      // Grant access if: user has ALL clients, or specifically has this client key assigned
+      if (!allowed.includes("all") && !allowed.includes(clientKey.toLowerCase())) {
+        return { success: false, error: "Access denied: You are not assigned to client '" + clientKey + "'." };
+      }
     }
 
     // Get client
@@ -2665,4 +2668,47 @@ function getShopifyToken() {
   } catch(e) {
     Logger.log("❌ Error: " + e.message);
   }
+}
+
+// ============================================================
+// DIAGNOSTIC — Run once to diagnose & fix "Access Denied" issues
+// ============================================================
+function fixUserAccess() {
+  const ss = SpreadsheetApp.openById(SYSTEM_SHEET_ID);
+  const sheet = ss.getSheetByName("_Users");
+  if (!sheet) { Logger.log("❌ _Users sheet not found!"); return; }
+
+  const data = sheet.getDataRange().getValues();
+  const hdrs = data[0];
+  const uIdx = hdrs.indexOf("username");
+  const rIdx = hdrs.indexOf("role");
+  const cIdx = hdrs.indexOf("assigned_clients");
+  const aIdx = hdrs.indexOf("is_active");
+
+  Logger.log("=== CURRENT USER RECORDS ===");
+  for (let i = 1; i < data.length; i++) {
+    const row = data[i];
+    const username  = String(row[uIdx] || "").trim();
+    const role      = String(row[rIdx] || "").trim();
+    const clients   = String(row[cIdx] || "").trim();
+    const isActive  = row[aIdx];
+    Logger.log("User: " + username + " | Role: " + role + " | Clients: '" + clients + "' | Active: " + isActive);
+
+    // Fix: if assigned_clients is empty, NONE, or undefined — set to ALL for owner/manager
+    if (role === "owner" || role === "manager") {
+      const needsFix = !clients || clients === "" || clients.toUpperCase() === "NONE" || clients === "undefined";
+      if (needsFix) {
+        sheet.getRange(i + 1, cIdx + 1).setValue("ALL");
+        Logger.log("  ✅ Fixed: Set assigned_clients = 'ALL' for " + username);
+      } else {
+        Logger.log("  ✓ OK: assigned_clients is '" + clients + "'");
+      }
+    }
+
+    // Fix: ensure is_active is properly set to TRUE (boolean or string)
+    if (isActive !== true && String(isActive).toLowerCase() !== "true") {
+      Logger.log("  ⚠️ WARNING: User '" + username + "' is_active is: " + isActive + " — may be blocking login.");
+    }
+  }
+  Logger.log("=== DONE — Refresh the app and try again ===");
 }
