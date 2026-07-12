@@ -2105,3 +2105,41 @@ function _syncShopifyMonthData(shopDomain, accessToken, sheetId, monthLabel, dat
     });
   }
 }
+
+function shareAllExistingSheetsWithAgency() {
+  const agencyEmail = "digifycecbe@gmail.com";
+  Logger.log("=== Starting Existing Sheets Sharing Job ===");
+
+  // 1. Share the system sheet
+  try {
+    const sysSheetFile = DriveApp.getFileById(SYSTEM_SHEET_ID);
+    sysSheetFile.addEditor(agencyEmail);
+    Logger.log("✅ Shared System Sheet with " + agencyEmail);
+  } catch(e) {
+    Logger.log("❌ Could not share System Sheet: " + e.message);
+  }
+
+  // 2. Share client sheets
+  try {
+    const clients = serverGetClients("owner", "ALL");
+    if (!Array.isArray(clients)) {
+      Logger.log("❌ Could not load clients from database");
+      return;
+    }
+    clients.forEach(c => {
+      const sheetId = c.sheet_id;
+      if (sheetId && sheetId.trim() !== "") {
+        try {
+          DriveApp.getFileById(sheetId).addEditor(agencyEmail);
+          Logger.log("✅ Shared client sheet '" + c.name + "' (" + c.client_key + ") with " + agencyEmail);
+        } catch(se) {
+          Logger.log("❌ Could not share sheet for " + c.name + " (ID: " + sheetId + "): " + se.message);
+        }
+      }
+    });
+  } catch(e) {
+    Logger.log("❌ Error reading clients: " + e.message);
+  }
+
+  Logger.log("=== Existing Sheets Sharing Job Complete ===");
+}
