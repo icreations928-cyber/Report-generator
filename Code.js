@@ -59,6 +59,7 @@ function initSystemSheets() {
     getOrCreateTab(ss, "_Clients",      ["client_key","name","agent_email","client_logo_id","sheet_id","meta_access_token","meta_ad_account_ids","google_ads_enabled","google_ads_dev_token","google_ads_customer_id","google_ads_mcc_id","ga4_property_id","gsc_site_url","shopify_enabled","shopify_access_token","shopify_shop_name","created_at","updated_at","is_active"]);
     getOrCreateTab(ss, "_ReportLogs",   ["id","client_key","client_name","month_label","generated_by","status","slides_url","pptx_url","error_msg","generated_at"]);
     getOrCreateTab(ss, "_EditRequests", ["id","client_key","requested_by","field_changes","status","requested_at","reviewed_at","reviewed_by"]);
+    getOrCreateTab(ss, "_AuditLogs",    ["id","timestamp","username","action","details"]);
     const usersSheet = ss.getSheetByName("_Users");
     if (usersSheet.getLastRow() <= 1) {
       usersSheet.appendRow([OWNER_USERNAME, hashPassword(OWNER_PASSWORD), "Owner", "owner", "ALL", new Date().toISOString(), true]);
@@ -67,6 +68,42 @@ function initSystemSheets() {
   } catch(e) {
     Logger.log("initSystemSheets error: " + e.message);
     return { success: false, error: e.message };
+  }
+}
+
+function verifyUserRole(username, requiredRole) {
+  try {
+    if (!username) return false;
+    initSystemSheets();
+    const ss = getSystemSheet(), sheet = ss.getSheetByName("_Users");
+    if (!sheet) return false;
+    const data = sheet.getDataRange().getValues(), hdrs = data[0];
+    const uIdx = hdrs.indexOf("username"), rIdx = hdrs.indexOf("role"), aIdx = hdrs.indexOf("is_active");
+    for (let i = 1; i < data.length; i++) {
+      if (String(data[i][uIdx]).trim().toLowerCase() === username.trim().toLowerCase()) {
+        const isActive = data[i][aIdx] === true || String(data[i][aIdx]).toLowerCase() === "true" || data[i][aIdx] === 1;
+        if (!isActive) return false; // Inactive
+        const role = String(data[i][rIdx]).trim().toLowerCase();
+        if (requiredRole === "owner") return role === "owner";
+        return role === "owner" || role === "manager";
+      }
+    }
+    return false;
+  } catch(e) {
+    Logger.log("verifyUserRole error: " + e.message);
+    return false;
+  }
+}
+
+function logActivity(username, action, details) {
+  try {
+    initSystemSheets();
+    const sheet = getSystemSheet().getSheetByName("_AuditLogs");
+    if (sheet) {
+      sheet.appendRow(["ACT_" + Date.now(), new Date().toISOString(), username || "system", action, details || ""]);
+    }
+  } catch(e) {
+    Logger.log("logActivity error: " + e.message);
   }
 }
 
@@ -96,10 +133,18 @@ function serverLogin(username, password) {
     for (let i = 1; i < data.length; i++) {
       const row = data[i];
       if (String(row[idx.username]).trim().toLowerCase() !== username.toLowerCase()) continue;
-      if (!row[idx.active]) return { success: false, error: "Account is inactive" };
-      if (hashPassword(password) !== String(row[idx.hash]).trim()) return { success: false, error: "Invalid password" };
+      if (!row[idx.active]) {
+        logActivity(username, "login_failed", "Account is inactive");
+        return { success: false, error: "Account is inactive" };
+      }
+      if (hashPassword(password) !== String(row[idx.hash]).trim()) {
+        logActivity(username, "login_failed", "Invalid password");
+        return { success: false, error: "Invalid password" };
+      }
+      logActivity(username, "login_success", "Role: " + row[idx.role]);
       return { success: true, user: { username: row[idx.username], name: row[idx.name], role: row[idx.role], clients: String(row[idx.clients]) } };
     }
+    logActivity(username, "login_failed", "User not found");
     return { success: false, error: "User not found" };
   } catch(e) { return { success: false, error: e.message }; }
 }
@@ -117,9 +162,9 @@ function serverGetUsers() {
   } catch(e) { return { error: e.message }; }
 }
 
-function serverSaveUser(userData, currentUserRole) {
+function serverSaveUser(userData, currentUsername) {
   try {
-    if (currentUserRole !== "owner") return { success: false, error: "Owner only" };
+    if (!verifyUserRole(currentUsername, "owner")) return { success: false, error: "Unauthorized: Owner only" };
     initSystemSheets();
     const sheet = getSystemSheet().getSheetByName("_Users");
     const data = sheet.getDataRange().getValues();
@@ -127,13 +172,14 @@ function serverSaveUser(userData, currentUserRole) {
       if (String(data[i][0]).toLowerCase() === userData.username.toLowerCase()) return { success: false, error: "Username already exists" };
     }
     sheet.appendRow([userData.username, hashPassword(userData.password), userData.name, userData.role, userData.assigned_clients || "NONE", new Date().toISOString(), true]);
+    logActivity(currentUsername, "create_user", "Created user: " + userData.username + " (" + userData.role + ")");
     return { success: true };
   } catch(e) { return { success: false, error: e.message }; }
 }
 
-function serverUpdateUser(userData, currentUserRole) {
+function serverUpdateUser(userData, currentUsername) {
   try {
-    if (currentUserRole !== "owner") return { success: false, error: "Owner only" };
+    if (!verifyUserRole(currentUsername, "owner")) return { success: false, error: "Unauthorized: Owner only" };
     const sheet = getSystemSheet().getSheetByName("_Users");
     const data = sheet.getDataRange().getValues();
     for (let i = 1; i < data.length; i++) {
@@ -142,6 +188,7 @@ function serverUpdateUser(userData, currentUserRole) {
         sheet.getRange(i+1, 5).setValue(userData.assigned_clients || "NONE");
         sheet.getRange(i+1, 7).setValue(userData.is_active !== false);
         if (userData.new_password && userData.new_password.trim() !== "") sheet.getRange(i+1, 2).setValue(hashPassword(userData.new_password));
+        logActivity(currentUsername, "update_user", "Updated user settings for: " + userData.username);
         return { success: true };
       }
     }
@@ -149,14 +196,18 @@ function serverUpdateUser(userData, currentUserRole) {
   } catch(e) { return { success: false, error: e.message }; }
 }
 
-function serverDeleteUser(username, currentUserRole) {
+function serverDeleteUser(username, currentUsername) {
   try {
-    if (currentUserRole !== "owner") return { success: false, error: "Owner only" };
+    if (!verifyUserRole(currentUsername, "owner")) return { success: false, error: "Unauthorized: Owner only" };
     if (username === OWNER_USERNAME) return { success: false, error: "Cannot delete owner" };
     const sheet = getSystemSheet().getSheetByName("_Users");
     const data = sheet.getDataRange().getValues();
     for (let i = 1; i < data.length; i++) {
-      if (String(data[i][0]).toLowerCase() === username.toLowerCase()) { sheet.deleteRow(i+1); return { success: true }; }
+      if (String(data[i][0]).toLowerCase() === username.toLowerCase()) {
+        sheet.deleteRow(i+1);
+        logActivity(currentUsername, "delete_user", "Removed user: " + username);
+        return { success: true };
+      }
     }
     return { success: false, error: "User not found" };
   } catch(e) { return { success: false, error: e.message }; }
@@ -167,7 +218,7 @@ function serverDeleteUser(username, currentUserRole) {
 // SECTION 5 — CLIENT MANAGEMENT
 // ============================================================
 
-function serverGetClients(userRole, userClients) {
+function serverGetClients(currentUsername, userClients) {
   try {
     const sheet = getSystemSheet().getSheetByName("_Clients");
     if (!sheet) return [];
@@ -180,7 +231,9 @@ function serverGetClients(userRole, userClients) {
       obj.shopify_access_token = obj.shopify_access_token ? obj.shopify_access_token.slice(0,8) + "••••••••" : "";
       return obj;
     }).filter(r => r.is_active !== false && r.is_active !== "FALSE" && r.is_active !== false);
-    if (userRole !== "owner") {
+    
+    const isOwner = verifyUserRole(currentUsername, "owner");
+    if (!isOwner) {
       const allowed = String(userClients).split(",").map(s => s.trim().toLowerCase());
       if (!allowed.includes("all")) rows = rows.filter(r => allowed.includes(String(r.client_key).toLowerCase()));
     }
@@ -202,9 +255,25 @@ function serverGetClientFull(clientKey) {
   } catch(e) { return { success: false, error: e.message }; }
 }
 
-function serverSaveClient(clientData, currentUserRole) {
+function serverSaveClient(clientData, currentUsername) {
   try {
+    if (!verifyUserRole(currentUsername, "manager")) return { success: false, error: "Unauthorized" };
     initSystemSheets();
+    
+    // Auto-fix Meta Ad Account IDs if act_ is missing
+    if (clientData.meta_ad_account_ids) {
+      clientData.meta_ad_account_ids = String(clientData.meta_ad_account_ids)
+        .split(",")
+        .map(id => {
+          let trimmed = id.trim();
+          if (trimmed && !isNaN(trimmed) && !trimmed.startsWith("act_")) {
+            return "act_" + trimmed;
+          }
+          return trimmed;
+        })
+        .join(",");
+    }
+
     const sheet = getSystemSheet().getSheetByName("_Clients");
     const data = sheet.getDataRange().getValues();
     for (let i = 1; i < data.length; i++) {
@@ -221,6 +290,7 @@ function serverSaveClient(clientData, currentUserRole) {
       clientData.shopify_enabled || false, clientData.shopify_access_token || "",
       clientData.shopify_shop_name || "", now, now, true
     ]);
+    logActivity(currentUsername, "create_client", "Added client: " + clientData.name + " (" + clientData.client_key + ")");
     return { success: true };
   } catch(e) { return { success: false, error: e.message }; }
 }
@@ -246,6 +316,7 @@ function serverGetEditRequests() {
 
 function serverApproveEdit(requestId, reviewedBy) {
   try {
+    if (!verifyUserRole(reviewedBy, "owner")) return { success: false, error: "Unauthorized: Owner only" };
     const reqSheet = getSystemSheet().getSheetByName("_EditRequests");
     const data = reqSheet.getDataRange().getValues(), hdrs = data[0];
     const idIdx = hdrs.indexOf("id");
@@ -277,6 +348,7 @@ function serverApproveEdit(requestId, reviewedBy) {
 
 function serverRejectEdit(requestId, reviewedBy) {
   try {
+    if (!verifyUserRole(reviewedBy, "owner")) return { success: false, error: "Unauthorized: Owner only" };
     const sheet = getSystemSheet().getSheetByName("_EditRequests");
     const data = sheet.getDataRange().getValues(), hdrs = data[0];
     for (let i = 1; i < data.length; i++) {
@@ -290,14 +362,15 @@ function serverRejectEdit(requestId, reviewedBy) {
   } catch(e) { return { success: false, error: e.message }; }
 }
 
-function serverDeleteClient(clientKey, currentUserRole) {
+function serverDeleteClient(clientKey, currentUsername) {
   try {
-    if (currentUserRole !== "owner") return { success: false, error: "Only owner can delete clients" };
+    if (!verifyUserRole(currentUsername, "owner")) return { success: false, error: "Only owner can delete clients" };
     const sheet = getSystemSheet().getSheetByName("_Clients");
     const data = sheet.getDataRange().getValues();
     for (let i = 1; i < data.length; i++) {
       if (String(data[i][0]).trim() === clientKey) {
         sheet.getRange(i+1, data[0].indexOf("is_active")+1).setValue(false);
+        logActivity(currentUsername, "delete_client", "Soft deleted client key: " + clientKey);
         return { success: true };
       }
     }
@@ -310,10 +383,11 @@ function serverDeleteClient(clientKey, currentUserRole) {
 // SECTION 6 — REPORT GENERATION
 // ============================================================
 
-function serverGenerateReport(clientKey, month, generatedBy, userRole, userClients) {
+function serverGenerateReport(clientKey, month, generatedBy, userClients) {
   try {
     // Access check
-    if (userRole !== "owner") {
+    const isOwner = verifyUserRole(generatedBy, "owner");
+    if (!isOwner) {
       const allowed = String(userClients).split(",").map(s => s.trim().toLowerCase());
       if (!allowed.includes("all") && !allowed.includes(clientKey.toLowerCase())) return { success: false, error: "Access denied" };
     }
@@ -366,29 +440,32 @@ function serverGenerateReport(clientKey, month, generatedBy, userRole, userClien
     const fileId = slideUrl.split("/d/")[1].split("/")[0];
     moveFileToReportsFolder(fileId);
     const pptxUrl = "https://docs.google.com/presentation/d/" + fileId + "/export/pptx";
+    logActivity(generatedBy, "generate_report", "Client: " + c.name + " (" + clientKey + "), Month: " + M.currLabel);
     _logReport(clientKey, c.name, M.currLabel, generatedBy, "success", slideUrl, pptxUrl, "");
     return { success: true, slideUrl, pptxUrl, month: M.currFull };
 
   } catch(e) {
     Logger.log("serverGenerateReport ERROR: " + e.message + "\n" + e.stack);
+    logActivity(generatedBy, "generate_report_failed", "Client: " + clientKey + ", Month: " + (month || "auto") + ", Error: " + e.message);
     _logReport(clientKey, clientKey, month || "auto", generatedBy, "failed", "", "", e.message);
     return { success: false, error: e.message };
   }
 }
 
-function serverGenerateAllReports(month, generatedBy, userRole, userClients) {
+function serverGenerateAllReports(month, generatedBy, userClients) {
   try {
-    const clients = serverGetClients(userRole, userClients);
+    const clients = serverGetClients(generatedBy, userClients);
     if (!Array.isArray(clients)) return { success: false, error: "Could not load clients" };
     const results = [];
     clients.forEach(c => {
       try {
-        const r = serverGenerateReport(c.client_key, month, generatedBy, userRole, userClients);
+        const r = serverGenerateReport(c.client_key, month, generatedBy, userClients);
         results.push({ client: c.name, key: c.client_key, success: r.success, slideUrl: r.slideUrl || "", pptxUrl: r.pptxUrl || "", error: r.error || "" });
       } catch(e) {
         results.push({ client: c.name, key: c.client_key, success: false, slideUrl: "", pptxUrl: "", error: e.message });
       }
     });
+    logActivity(generatedBy, "generate_all_reports", "Month: " + (month || "auto") + ", Count: " + clients.length);
     return { success: true, results };
   } catch(e) { return { success: false, error: e.message }; }
 }
@@ -438,13 +515,15 @@ function testReportsFolder() {
   }
 }
 
-function serverGetReportLogs(userRole, userClients, limit) {
+function serverGetReportLogs(currentUsername, userClients, limit) {
   try {
     const sheet = getSystemSheet().getSheetByName("_ReportLogs");
     if (!sheet) return [];
     const data = sheet.getDataRange().getValues(), hdrs = data[0];
     let rows = data.slice(1).reverse().map(row => { const obj = {}; hdrs.forEach((h,i) => obj[h] = row[i]); return obj; });
-    if (userRole !== "owner") {
+    
+    const isOwner = verifyUserRole(currentUsername, "owner");
+    if (!isOwner) {
       const allowed = String(userClients).split(",").map(s => s.trim().toLowerCase());
       if (!allowed.includes("all")) rows = rows.filter(r => allowed.includes(String(r.client_key).toLowerCase()));
     }
@@ -553,9 +632,10 @@ function _buildTab(sheet, def) {
 // SECTION 7C — CREATE NEW SHEET
 // ============================================================
 
-function serverCreateClientSheet(clientKey, clientName, currentUserRole, currentUserClients) {
+function serverCreateClientSheet(clientKey, clientName, currentUsername, currentUserClients) {
   try {
-    if (currentUserRole !== "owner") {
+    const isOwner = verifyUserRole(currentUsername, "owner");
+    if (!isOwner) {
       const allowed = String(currentUserClients).split(",").map(s => s.trim().toLowerCase());
       if (!allowed.includes("all") && !allowed.includes(clientKey.toLowerCase())) return { success: false, error: "Access denied" };
     }
@@ -594,9 +674,10 @@ function serverCreateClientSheet(clientKey, clientName, currentUserRole, current
 // SECTION 7D — RESET EXISTING SHEET
 // ============================================================
 
-function serverResetClientSheet(clientKey, currentUserRole, currentUserClients) {
+function serverResetClientSheet(clientKey, currentUsername, currentUserClients) {
   try {
-    if (currentUserRole !== "owner") {
+    const isOwner = verifyUserRole(currentUsername, "owner");
+    if (!isOwner) {
       const allowed = String(currentUserClients).split(",").map(s => s.trim().toLowerCase());
       if (!allowed.includes("all") && !allowed.includes(clientKey.toLowerCase())) return { success: false, error: "Access denied" };
     }
@@ -2143,4 +2224,14 @@ function shareAllExistingSheetsWithAgency() {
   }
 
   Logger.log("=== Existing Sheets Sharing Job Complete ===");
+}
+
+function serverGetAuditLogs(currentUsername) {
+  try {
+    if (!verifyUserRole(currentUsername, "owner")) return { success: false, error: "Unauthorized: Owner only" };
+    const sheet = getSystemSheet().getSheetByName("_AuditLogs");
+    if (!sheet) return [];
+    const data = sheet.getDataRange().getValues(), hdrs = data[0];
+    return data.slice(1).reverse().map(row => { const obj = {}; hdrs.forEach((h,i) => obj[h] = row[i]); return obj; });
+  } catch(e) { return { error: e.message }; }
 }

@@ -84,7 +84,7 @@ function showPage(page) {
   if (nav) nav.classList.add('active');
   currentPage = page;
   var titles = { dashboard:'Dashboard', clients:'Clients', clientform:'Client Form',
-    generate:'Generate Report', logs:'Report Logs', users:'Users', approvals:'Pending Approvals' };
+    generate:'Generate Report', logs:'Report Logs', users:'Users', approvals:'Pending Approvals', auditlogs:'Audit Logs' };
   document.getElementById('topbarTitle').textContent = titles[page] || page;
   document.getElementById('sidebar').classList.remove('open');
   if (page === 'dashboard') loadDashboard();
@@ -93,6 +93,7 @@ function showPage(page) {
   if (page === 'logs')      loadLogs();
   if (page === 'users')     loadUsersTable();
   if (page === 'approvals') loadApprovals();
+  if (page === 'auditlogs') loadAuditLogs();
 }
 
 function toggleSidebar() { document.getElementById('sidebar').classList.toggle('open'); }
@@ -106,7 +107,7 @@ function loadDashboard() {
       document.getElementById('statClients').textContent = clients.length;
       renderClientCards(clients);
     })
-    .serverGetClients(currentUser.role, currentUser.clients);
+    .serverGetClients(currentUser.username, currentUser.clients);
   google.script.run
     .withSuccessHandler(function(logs) {
       if (!Array.isArray(logs)) return;
@@ -114,7 +115,7 @@ function loadDashboard() {
       document.getElementById('statSuccess').textContent = logs.filter(function(l){ return l.status==='success'; }).length;
       document.getElementById('statFailed').textContent  = logs.filter(function(l){ return l.status==='failed';  }).length;
     })
-    .serverGetReportLogs(currentUser.role, currentUser.clients, 200);
+    .serverGetReportLogs(currentUser.username, currentUser.clients, 200);
 }
 
 function renderClientCards(clients) {
@@ -143,9 +144,14 @@ function renderClientCards(clients) {
       + '<button class="btn btn-primary sm" onclick="quickGenerate(\'' + esc(c.client_key) + '\',\'' + esc(c.name) + '\')">Generate</button>'
       + sheetBtn
       + '<button class="btn btn-ghost sm" onclick="editClient(\'' + esc(c.client_key) + '\')">Edit</button>'
+      + '<button class="btn btn-ghost sm" style="border-color:var(--muted);color:var(--muted)" onclick="viewClientHistory(\'' + esc(c.client_key) + '\',\'' + esc(c.name) + '\')">History</button>'
       + '</div></div>';
   });
   el.innerHTML = html;
+  
+  // Clear search on load
+  var df = document.getElementById('dashboardSearch');
+  if (df) df.value = '';
 }
 
 function quickGenerate(clientKey, clientName) {
@@ -181,11 +187,16 @@ function loadClientsTable() {
           + '<td><div style="display:flex;gap:6px;flex-wrap:wrap">' + sheetBtn
           + '<button class="btn-icon" onclick="editClient(\'' + esc(c.client_key) + '\')">Edit</button>'
           + '<button class="btn-icon" onclick="quickGenerate(\'' + esc(c.client_key) + '\',\'' + esc(c.name) + '\')">Run</button>'
+          + '<button class="btn-icon" onclick="viewClientHistory(\'' + esc(c.client_key) + '\',\'' + esc(c.name) + '\')">History</button>'
           + delBtn + '</div></td></tr>';
       });
       el.innerHTML = '<table><thead><tr><th>Key</th><th>Brand</th><th>Agent</th><th>GA4</th><th>Sheet</th><th>G.Ads</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
+      
+      // Clear filters on load
+      var sf = document.getElementById('clientSearch');
+      if (sf) sf.value = '';
     })
-    .serverGetClients(currentUser.role, currentUser.clients);
+    .serverGetClients(currentUser.username, currentUser.clients);
 }
 
 // ── CLIENT FORM ──────────────────────────────────────────────
@@ -200,6 +211,7 @@ function showAddClient() {
 }
 
 function editClient(clientKey) {
+  showLoadingOverlay('Loading client configuration...');
   document.getElementById('clientFormTitle').textContent = 'Edit Client';
   document.getElementById('clientFormBtn').textContent   = currentUser.role === 'owner' ? 'Save Changes' : 'Request Edit';
   document.getElementById('editMode').value      = 'edit';
@@ -207,6 +219,7 @@ function editClient(clientKey) {
   document.getElementById('fc_client_key').disabled = true;
   google.script.run
     .withSuccessHandler(function(res) {
+      hideLoadingOverlay();
       if (!res.success) { showFlash('error', res.error); return; }
       var c = res.client;
       document.getElementById('fc_client_key').value             = c.client_key;
@@ -227,6 +240,7 @@ function editClient(clientKey) {
       document.getElementById('fc_shopify_shop_name').value      = c.shopify_shop_name || '';
       showPage('clientform');
     })
+    .withFailureHandler(function(err) { hideLoadingOverlay(); showFlash('error', err.message); })
     .serverGetClientFull(clientKey);
 }
 
@@ -261,10 +275,26 @@ function submitClientForm() {
     shopify_access_token:   document.getElementById('fc_shopify_access_token').value.trim(),
     shopify_shop_name:      document.getElementById('fc_shopify_shop_name').value.trim(),
   };
+  
+  // Validations
   var required = ['client_key','name','agent_email','meta_access_token','meta_ad_account_ids','ga4_property_id','gsc_site_url'];
   for (var i = 0; i < required.length; i++) {
     if (!data[required[i]]) { showFlash('error', 'Please fill in all required fields (marked with *)'); return; }
   }
+  
+  if (data.google_ads_enabled) {
+    if (!data.google_ads_dev_token || !data.google_ads_customer_id) {
+      showFlash('error', 'Google Ads is enabled. Developer Token and Customer ID are required.');
+      return;
+    }
+  }
+  if (data.shopify_enabled) {
+    if (!data.shopify_access_token || !data.shopify_shop_name) {
+      showFlash('error', 'Shopify is enabled. Access Token and Shop subdomain are required.');
+      return;
+    }
+  }
+
   btn.disabled  = true;
   btn.innerHTML = '<span class="spinner"></span> Saving...';
   if (mode === 'add') {
@@ -274,7 +304,7 @@ function submitClientForm() {
         if (res.success) { showFlash('success', 'Client added! Now click Create Sheet to set up their data sheet.'); showPage('clients'); }
         else showFlash('error', res.error);
       })
-      .serverSaveClient(data, currentUser.role);
+      .serverSaveClient(data, currentUser.username);
   } else {
     var changes = {};
     Object.keys(data).forEach(function(k) { if (k !== 'client_key') changes[k] = data[k]; });
@@ -310,15 +340,16 @@ function deleteClient(clientKey, clientName) {
       if (res.success) { showFlash('success', clientName + ' deleted.'); loadClientsTable(); loadDashboard(); }
       else showFlash('error', res.error);
     })
-    .serverDeleteClient(clientKey, currentUser.role);
+    .serverDeleteClient(clientKey, currentUser.username);
 }
 
 // ── CREATE SHEET ─────────────────────────────────────────────
 function createClientSheet(clientKey, clientName) {
   if (!confirm('Create a new Google Sheet for "' + clientName + '"?\n\nThis will create a fresh sheet with all required tabs and auto-link it to this client.')) return;
-  showFlash('info', 'Creating sheet for ' + clientName + '... please wait.');
+  showLoadingOverlay('Creating Google Sheet for ' + clientName + '... (takes 10-15s)');
   google.script.run
     .withSuccessHandler(function(res) {
+      hideLoadingOverlay();
       if (!res.success) { showFlash('error', 'Failed: ' + res.error); return; }
       var msg = document.getElementById('flashMsg');
       msg.className = 'flash-msg alert alert-success';
@@ -329,8 +360,8 @@ function createClientSheet(clientKey, clientName) {
       if (currentPage === 'clients')   loadClientsTable();
       if (currentPage === 'dashboard') loadDashboard();
     })
-    .withFailureHandler(function(err) { showFlash('error', 'Error: ' + err.message); })
-    .serverCreateClientSheet(clientKey, clientName, currentUser.role, currentUser.clients);
+    .withFailureHandler(function(err) { hideLoadingOverlay(); showFlash('error', 'Error: ' + err.message); })
+    .serverCreateClientSheet(clientKey, clientName, currentUser.username, currentUser.clients);
 }
 
 function openClientSheet(clientKey) {
@@ -356,7 +387,152 @@ function loadGenerateDropdown() {
         sel.appendChild(opt);
       });
     })
-    .serverGetClients(currentUser.role, currentUser.clients);
+    .serverGetClients(currentUser.username, currentUser.clients);
+}
+
+// ── FILTER FUNCTIONS ─────────────────────────────────────────
+function filterDashboardCards() {
+  var query = document.getElementById('dashboardSearch').value.toLowerCase().trim();
+  var cards = document.querySelectorAll('#clientCards .client-card');
+  var matchCount = 0;
+  cards.forEach(function(card) {
+    var name = card.querySelector('.client-card-name').textContent.toLowerCase();
+    var key = card.querySelector('.client-card-key').textContent.toLowerCase();
+    if (name.indexOf(query) > -1 || key.indexOf(query) > -1) {
+      card.style.display = 'block';
+      matchCount++;
+    } else {
+      card.style.display = 'none';
+    }
+  });
+  // Adjust empty state if all cards are hidden
+  var grid = document.getElementById('clientCards');
+  var empty = grid.querySelector('.empty-search-state');
+  if (matchCount === 0 && cards.length > 0) {
+    if (!empty) {
+      var div = document.createElement('div');
+      div.className = 'empty-search-state empty-state';
+      div.style.padding = '30px';
+      div.innerHTML = '<div class="empty-state-text">No matching clients found.</div>';
+      grid.appendChild(div);
+    }
+  } else if (empty) {
+    empty.remove();
+  }
+}
+
+function filterClientsTable() {
+  var query = document.getElementById('clientSearch').value.toLowerCase().trim();
+  var rows = document.querySelectorAll('#clientsTable tbody tr');
+  rows.forEach(function(row) {
+    var text = row.textContent.toLowerCase();
+    row.style.display = text.indexOf(query) > -1 ? '' : 'none';
+  });
+}
+
+function filterLogsTable() {
+  var clientQuery = document.getElementById('logClientSearch').value.toLowerCase().trim();
+  var statusQuery = document.getElementById('logStatusFilter').value.toLowerCase().trim();
+  var userQuery = document.getElementById('logUserSearch').value.toLowerCase().trim();
+  
+  var rows = document.querySelectorAll('#logsTable tbody tr');
+  rows.forEach(function(row) {
+    var cells = row.getElementsByTagName('td');
+    if (cells.length < 5) return;
+    var clientText = cells[0].textContent.toLowerCase();
+    var statusText = cells[2].textContent.toLowerCase().trim();
+    var userText = cells[3].textContent.toLowerCase();
+    
+    var matchesClient = clientText.indexOf(clientQuery) > -1;
+    var matchesStatus = statusQuery === 'all' || statusText === statusQuery;
+    var matchesUser = userText.indexOf(userQuery) > -1;
+    
+    row.style.display = (matchesClient && matchesStatus && matchesUser) ? '' : 'none';
+  });
+}
+
+function filterAuditLogs() {
+  var query = document.getElementById('auditSearch').value.toLowerCase().trim();
+  var rows = document.querySelectorAll('#auditLogsTable tbody tr');
+  rows.forEach(function(row) {
+    var text = row.textContent.toLowerCase();
+    row.style.display = text.indexOf(query) > -1 ? '' : 'none';
+  });
+}
+
+// ── AUDIT LOGS ───────────────────────────────────────────────
+function loadAuditLogs() {
+  if (currentUser.role !== 'owner') return;
+  var el = document.getElementById('auditLogsTable');
+  el.innerHTML = '<div class="loading-state">Loading audit logs...</div>';
+  google.script.run
+    .withSuccessHandler(function(logs) {
+      if (!Array.isArray(logs) || !logs.length) {
+        el.innerHTML = '<div class="empty-state"><div class="empty-state-icon">&#9635;</div><div class="empty-state-text">No activity logged yet.</div></div>';
+        return;
+      }
+      var rows = '';
+      logs.forEach(function(l) {
+        rows += '<tr>'
+          + '<td class="code-cell" style="font-size:11px">' + esc(l.id) + '</td>'
+          + '<td style="font-size:12px;color:var(--muted)">' + formatDate(l.timestamp) + '</td>'
+          + '<td><strong>' + esc(l.username) + '</strong></td>'
+          + '<td><span class="status-badge info" style="background:#E3F2FD;color:#1565C0">' + esc(l.action) + '</span></td>'
+          + '<td style="font-size:12px">' + esc(l.details) + '</td>'
+          + '</tr>';
+      });
+      el.innerHTML = '<table><thead><tr><th>Log ID</th><th>Timestamp</th><th>User</th><th>Action</th><th>Details</th></tr></thead><tbody>' + rows + '</tbody></table>';
+      var af = document.getElementById('auditSearch');
+      if (af) af.value = '';
+    })
+    .serverGetAuditLogs(currentUser.username);
+}
+
+// ── CLIENT REPORT HISTORY ────────────────────────────────────
+function viewClientHistory(clientKey, clientName) {
+  document.getElementById('historyModalTitle').textContent = 'Report History: ' + clientName;
+  var container = document.getElementById('historyTableContainer');
+  container.innerHTML = '<div class="loading-state">Loading history...</div>';
+  document.getElementById('historyModal').style.display = 'flex';
+  
+  google.script.run
+    .withSuccessHandler(function(logs) {
+      if (!Array.isArray(logs)) { container.innerHTML = '<div class="loading-state">Error loading history</div>'; return; }
+      var clientLogs = logs.filter(function(l) { return l.client_key.toLowerCase() === clientKey.toLowerCase(); });
+      if (!clientLogs.length) {
+        container.innerHTML = '<div class="empty-state" style="padding:20px 0"><div class="empty-state-text">No report history found for this client.</div></div>';
+        return;
+      }
+      var rows = '';
+      clientLogs.forEach(function(l) {
+        rows += '<tr>'
+          + '<td><strong>' + esc(l.month_label) + '</strong></td>'
+          + '<td><span class="status-badge ' + l.status + '">' + l.status + '</span></td>'
+          + '<td>' + esc(l.generated_by) + '</td>'
+          + '<td style="font-size:11px;color:var(--muted)">' + formatDate(l.generated_at) + '</td>'
+          + '<td>'
+          + (l.slides_url ? '<a class="result-link" href="' + l.slides_url + '" target="_blank" style="font-size:11px;margin-right:8px;">Slides</a>' : '')
+          + (l.pptx_url   ? '<a class="result-link pptx" href="' + l.pptx_url + '" target="_blank" style="font-size:11px">PPTX</a>' : '')
+          + (l.error_msg  ? '<br><span style="color:var(--red);font-size:10px">' + esc(l.error_msg.slice(0,40)) + '</span>' : '')
+          + '</td></tr>';
+      });
+      container.innerHTML = '<table><thead><tr><th>Month</th><th>Status</th><th>Generated By</th><th>Date</th><th>Links</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    })
+    .serverGetReportLogs(currentUser.username, currentUser.clients, 500);
+}
+
+function closeHistoryModal() {
+  document.getElementById('historyModal').style.display = 'none';
+}
+
+// ── LOADING SPINNER OVERLAYS ──────────────────────────────────
+function showLoadingOverlay(msg) {
+  document.getElementById('loadingOverlayText').textContent = msg || 'Processing...';
+  document.getElementById('loadingOverlay').style.display = 'flex';
+}
+
+function hideLoadingOverlay() {
+  document.getElementById('loadingOverlay').style.display = 'none';
 }
 
 function toggleMonthInput() {
@@ -378,13 +554,15 @@ function generateReport() {
     monthStr  = names[parseInt(parts[1])-1] + ' ' + parts[0];
   }
   btn.disabled  = true;
-  btn.innerHTML = '<span class="spinner"></span> Generating... (this may take 1-2 min)';
+  btn.innerHTML = '<span class="spinner"></span> Generating...';
+  showLoadingOverlay('Generating marketing report for ' + clientKey + '... This connects to GA4, Ads, Shopify, and GPT-4o to draw slides. (takes 1-2 mins)');
   var resultsEl = document.getElementById('genResults');
   var innerEl   = document.getElementById('genResultsInner');
   resultsEl.style.display = 'none';
 
   function onFail(err) {
     btn.disabled = false; btn.innerHTML = 'Generate Report';
+    hideLoadingOverlay();
     showFlash('error', 'Error: ' + err.message);
   }
 
@@ -392,6 +570,7 @@ function generateReport() {
     google.script.run
       .withSuccessHandler(function(res) {
         btn.disabled = false; btn.innerHTML = 'Generate Report';
+        hideLoadingOverlay();
         resultsEl.style.display = 'block';
         if (!res.success) { innerEl.innerHTML = '<div class="alert alert-error">' + esc(res.error) + '</div>'; return; }
         var html = '';
@@ -409,11 +588,12 @@ function generateReport() {
         innerEl.innerHTML = html;
       })
       .withFailureHandler(onFail)
-      .serverGenerateAllReports(monthStr, currentUser.username, currentUser.role, currentUser.clients);
+      .serverGenerateAllReports(monthStr, currentUser.username, currentUser.clients);
   } else {
     google.script.run
       .withSuccessHandler(function(res) {
         btn.disabled = false; btn.innerHTML = 'Generate Report';
+        hideLoadingOverlay();
         resultsEl.style.display = 'block';
         if (!res.success) { innerEl.innerHTML = '<div class="alert alert-error">' + esc(res.error) + '</div>'; return; }
         innerEl.innerHTML = '<div class="result-item success">'
@@ -425,7 +605,7 @@ function generateReport() {
         loadApprovalsBadge();
       })
       .withFailureHandler(onFail)
-      .serverGenerateReport(clientKey, monthStr, currentUser.username, currentUser.role, currentUser.clients);
+      .serverGenerateReport(clientKey, monthStr, currentUser.username, currentUser.clients);
   }
 }
 
@@ -448,14 +628,22 @@ function loadLogs() {
           + '<td>' + esc(l.generated_by) + '</td>'
           + '<td style="font-size:12px;color:var(--muted)">' + formatDate(l.generated_at) + '</td>'
           + '<td>'
-          + (l.slides_url ? '<a class="result-link" href="' + l.slides_url + '" target="_blank" style="font-size:11px">Slides</a> ' : '')
+          + (l.slides_url ? '<a class="result-link" href="' + l.slides_url + '" target="_blank" style="font-size:11px;margin-right:8px;">Slides</a>' : '')
           + (l.pptx_url   ? '<a class="result-link pptx" href="' + l.pptx_url + '" target="_blank" style="font-size:11px">PPTX</a>' : '')
-          + (l.error_msg  ? '<span style="color:var(--red);font-size:11px">' + esc(l.error_msg.slice(0,60)) + '</span>' : '')
+          + (l.error_msg  ? '<span style="color:var(--red);font-size:11px"><br>' + esc(l.error_msg.slice(0,60)) + '</span>' : '')
           + '</td></tr>';
       });
       el.innerHTML = '<table><thead><tr><th>Client</th><th>Month</th><th>Status</th><th>Generated By</th><th>Date</th><th>Links</th></tr></thead><tbody>' + rows + '</tbody></table>';
+      
+      // Clear filters on load
+      var cf = document.getElementById('logClientSearch');
+      var sf = document.getElementById('logStatusFilter');
+      var uf = document.getElementById('logUserSearch');
+      if (cf) cf.value = '';
+      if (sf) sf.value = 'ALL';
+      if (uf) uf.value = '';
     })
-    .serverGetReportLogs(currentUser.role, currentUser.clients, 100);
+    .serverGetReportLogs(currentUser.username, currentUser.clients, 100);
 }
 
 // ── USERS ────────────────────────────────────────────────────
@@ -506,7 +694,7 @@ function saveUser() {
       if (res.success) { closeUserModal(); showFlash('success','User added!'); loadUsersTable(); }
       else alert('Error: ' + res.error);
     })
-    .serverSaveUser(data, currentUser.role);
+    .serverSaveUser(data, currentUser.username);
 }
 
 function deleteUser(username) {
@@ -516,7 +704,7 @@ function deleteUser(username) {
       if (res.success) { showFlash('success','User removed.'); loadUsersTable(); }
       else showFlash('error', res.error);
     })
-    .serverDeleteUser(username, currentUser.role);
+    .serverDeleteUser(username, currentUser.username);
 }
 
 // ── APPROVALS ────────────────────────────────────────────────
