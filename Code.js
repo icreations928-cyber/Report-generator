@@ -2108,12 +2108,12 @@ function _syncShopifyMonthData(shopDomain, accessToken, sheetId, monthLabel, dat
 
 function shareAllExistingSheetsWithAgency() {
   const agencyEmail = "digifycecbe@gmail.com";
-  Logger.log("=== Starting Existing Sheets Sharing Job ===");
+  Logger.log("=== Starting Existing Sheets Sharing Job (via SpreadsheetApp) ===");
 
   // 1. Share the system sheet
   try {
-    const sysSheetFile = DriveApp.getFileById(SYSTEM_SHEET_ID);
-    sysSheetFile.addEditor(agencyEmail);
+    const sysSheet = SpreadsheetApp.openById(SYSTEM_SHEET_ID);
+    sysSheet.addEditor(agencyEmail);
     Logger.log("✅ Shared System Sheet with " + agencyEmail);
   } catch(e) {
     Logger.log("❌ Could not share System Sheet: " + e.message);
@@ -2130,7 +2130,8 @@ function shareAllExistingSheetsWithAgency() {
       const sheetId = c.sheet_id;
       if (sheetId && sheetId.trim() !== "") {
         try {
-          DriveApp.getFileById(sheetId).addEditor(agencyEmail);
+          const clientSheet = SpreadsheetApp.openById(sheetId);
+          clientSheet.addEditor(agencyEmail);
           Logger.log("✅ Shared client sheet '" + c.name + "' (" + c.client_key + ") with " + agencyEmail);
         } catch(se) {
           Logger.log("❌ Could not share sheet for " + c.name + " (ID: " + sheetId + "): " + se.message);
