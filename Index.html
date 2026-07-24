@@ -103,13 +103,50 @@
         </div>
         <button class="btn btn-primary" onclick="showPage('generate')">Generate Report</button>
       </div>
+
       <div class="stats-row">
-        <div class="stat-card"><div class="stat-val" id="statClients">--</div><div class="stat-lbl">Total Clients</div></div>
-        <div class="stat-card"><div class="stat-val" id="statReports">--</div><div class="stat-lbl">Reports Generated</div></div>
-        <div class="stat-card"><div class="stat-val" id="statSuccess">--</div><div class="stat-lbl">Successful</div></div>
-        <div class="stat-card"><div class="stat-val" id="statFailed">--</div><div class="stat-lbl">Failed</div></div>
+        <div class="stat-card">
+          <div class="stat-val" id="statReportsThisMonth">--</div>
+          <div class="stat-lbl">Reports This Month</div>
+          <div class="stat-trend flat" id="statReportsTrend">&nbsp;</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-val" id="statSuccessRate">--</div>
+          <div class="stat-lbl">Success Rate</div>
+          <div class="stat-trend flat" id="statSuccessSub">&nbsp;</div>
+        </div>
+        <div class="stat-card" id="statAttentionCard">
+          <div class="stat-val" id="statAttention">--</div>
+          <div class="stat-lbl">Needs Attention</div>
+          <div class="stat-trend flat" id="statAttentionSub">&nbsp;</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-val" id="statClients">--</div>
+          <div class="stat-lbl">Active Clients</div>
+          <div class="stat-trend flat" id="statClientsSub">&nbsp;</div>
+        </div>
       </div>
-      <div class="section-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 20px;">
+
+      <div class="dash-grid">
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">Needs Attention</div>
+          </div>
+          <div class="panel-body" id="attentionPanel">
+            <div class="loading-state">Checking connections...</div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">Recent Activity</div>
+          </div>
+          <div class="panel-body" id="activityPanel">
+            <div class="loading-state">Loading activity...</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="section-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 16px;">
         <h2 class="section-title" style="margin-bottom: 0;">Your Clients</h2>
         <input type="text" id="dashboardSearch" class="form-input" placeholder="Search client name or key..." oninput="filterDashboardCards()" style="max-width: 250px; padding: 6px 12px; font-size: 13px;">
       </div>
@@ -188,6 +225,10 @@
           <input type="text" id="fc_meta_ad_account_ids" class="form-input" placeholder="act_111111,act_222222,act_333333">
           <span class="form-hint">Comma separated if multiple accounts.</span>
         </div>
+        <div class="test-conn-row">
+          <button type="button" class="btn-test" id="testBtn_meta" onclick="testConnection('meta')">Test Connection</button>
+          <span class="test-conn-result" id="testResult_meta"></span>
+        </div>
 
         <div class="form-section-title">Google Analytics 4</div>
         <div class="form-group">
@@ -195,12 +236,20 @@
           <input type="text" id="fc_ga4_property_id" class="form-input" placeholder="e.g. 514241136">
           <span class="form-hint">Numbers only. Found in GA4 Admin → Property Settings.</span>
         </div>
+        <div class="test-conn-row">
+          <button type="button" class="btn-test" id="testBtn_ga4" onclick="testConnection('ga4')">Test Connection</button>
+          <span class="test-conn-result" id="testResult_ga4"></span>
+        </div>
 
         <div class="form-section-title">Search Console</div>
         <div class="form-group">
           <label class="form-label">GSC Site URL <span class="req">*</span></label>
           <input type="text" id="fc_gsc_site_url" class="form-input" placeholder="sc-domain:clientdomain.com">
           <span class="form-hint">Exactly as shown in Search Console.</span>
+        </div>
+        <div class="test-conn-row">
+          <button type="button" class="btn-test" id="testBtn_gsc" onclick="testConnection('gsc')">Test Connection</button>
+          <span class="test-conn-result" id="testResult_gsc"></span>
         </div>
 
         <div class="form-section-title">Google Ads <span class="optional-tag">Optional</span></div>
@@ -227,6 +276,11 @@
             <input type="text" id="fc_google_ads_mcc_id" class="form-input" placeholder="MCC customer ID">
           </div>
         </div>
+        <div class="test-conn-row">
+          <button type="button" class="btn-test" id="testBtn_google_ads" onclick="testConnection('google_ads')">Test Connection</button>
+          <span class="test-conn-result" id="testResult_google_ads"></span>
+        </div>
+
         <div class="form-section-title">Shopify Integration <span class="optional-tag">Optional</span></div>
         <div class="form-row">
           <div class="form-group">
@@ -249,6 +303,16 @@
             <button class="eye-btn" onclick="togglePwd('fc_shopify_access_token',this)">Show</button>
           </div>
           <span class="form-hint">Custom App access token with read_orders and read_products scopes</span>
+        </div>
+        <div class="test-conn-row">
+          <button type="button" class="btn-test" id="testBtn_shopify" onclick="testConnection('shopify')">Test Connection</button>
+          <span class="test-conn-result" id="testResult_shopify"></span>
+        </div>
+        <div class="alert alert-info" id="testAllWrap" style="display:none; margin-top:20px;">
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+            <span>Run all 5 connection tests at once for the saved credentials.</span>
+            <button type="button" class="btn btn-ghost sm" onclick="testAllConnections()" id="testAllBtn">Test All Connections</button>
+          </div>
         </div>
 
         <div class="form-actions">
@@ -418,9 +482,9 @@
 </div>
 
 <!-- Global Loading Overlay -->
-<div id="loadingOverlay" class="modal" style="display:none; background: rgba(13,27,42,0.5); z-index: 9999; backdrop-filter: blur(2px);">
-  <div style="text-align: center; color: var(--white);">
-    <div class="spinner" style="width: 48px; height: 48px; border-width: 4px; border-top-color: var(--cyan); margin-bottom: 15px;"></div>
+<div id="loadingOverlay" class="modal" style="display:none; background: rgba(8,9,13,0.65); z-index: 9999; backdrop-filter: blur(3px);">
+  <div style="text-align: center; color: #FFFFFF;">
+    <div class="spinner" style="width: 48px; height: 48px; border-width: 4px; border-top-color: #818CF8; margin-bottom: 15px;"></div>
     <div id="loadingOverlayText" style="font-weight: 600; font-size: 15px; text-shadow: 0 1px 4px rgba(0,0,0,0.5);">Processing...</div>
   </div>
 </div>

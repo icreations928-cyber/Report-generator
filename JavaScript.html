@@ -99,23 +99,179 @@ function showPage(page) {
 function toggleSidebar() { document.getElementById('sidebar').classList.toggle('open'); }
 
 // ── DASHBOARD ────────────────────────────────────────────────
+var SOURCE_LABELS = { meta:'Meta', ga4:'GA4', gsc:'GSC', google_ads:'G.Ads', shopify:'Shopify' };
+var _dashState = { clients: null, logs: null, connSummary: null };
+
 function loadDashboard() {
+  _dashState = { clients: null, logs: null, connSummary: null };
+  document.getElementById('attentionPanel').innerHTML = '<div class="loading-state">Checking connections...</div>';
+  document.getElementById('activityPanel').innerHTML  = '<div class="loading-state">Loading activity...</div>';
+
   google.script.run
     .withSuccessHandler(function(clients) {
       if (!Array.isArray(clients)) return;
       clientList = clients;
+      _dashState.clients = clients;
       document.getElementById('statClients').textContent = clients.length;
+      document.getElementById('statClientsSub').textContent = clients.length + (clients.length === 1 ? ' active client' : ' active clients');
       renderClientCards(clients);
+      if (_dashState.connSummary) applyStatusPillsToCards(_dashState.connSummary);
+      _maybeRenderAttention();
     })
     .serverGetClients(currentUser.username, currentUser.clients);
+
   google.script.run
     .withSuccessHandler(function(logs) {
       if (!Array.isArray(logs)) return;
-      document.getElementById('statReports').textContent = logs.length;
-      document.getElementById('statSuccess').textContent = logs.filter(function(l){ return l.status==='success'; }).length;
-      document.getElementById('statFailed').textContent  = logs.filter(function(l){ return l.status==='failed';  }).length;
+      _dashState.logs = logs;
+      renderReportStats(logs);
+      renderActivityFeed(logs);
+      _maybeRenderAttention();
     })
     .serverGetReportLogs(currentUser.username, currentUser.clients, 200);
+
+  google.script.run
+    .withSuccessHandler(function(summary) {
+      _dashState.connSummary = (summary && !summary.error) ? summary : {};
+      if (_dashState.clients) applyStatusPillsToCards(_dashState.connSummary);
+      _maybeRenderAttention();
+    })
+    .withFailureHandler(function() { _dashState.connSummary = {}; _maybeRenderAttention(); })
+    .serverGetConnectionSummary(currentUser.username, currentUser.clients);
+}
+
+function renderReportStats(logs) {
+  var now = new Date();
+  var thisKey = now.getFullYear() + '-' + now.getMonth();
+  var lastMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  var lastKey = lastMonthDate.getFullYear() + '-' + lastMonthDate.getMonth();
+
+  var thisMonthLogs = [], lastMonthLogs = [];
+  logs.forEach(function(l) {
+    if (!l.generated_at) return;
+    var d = new Date(l.generated_at);
+    if (isNaN(d.getTime())) return;
+    var key = d.getFullYear() + '-' + d.getMonth();
+    if (key === thisKey) thisMonthLogs.push(l);
+    else if (key === lastKey) lastMonthLogs.push(l);
+  });
+
+  document.getElementById('statReportsThisMonth').textContent = thisMonthLogs.length;
+  var trendEl = document.getElementById('statReportsTrend');
+  if (lastMonthLogs.length === 0) {
+    trendEl.textContent = thisMonthLogs.length > 0 ? 'vs 0 last month' : ' ';
+    trendEl.className = 'stat-trend ' + (thisMonthLogs.length > 0 ? 'up' : 'flat');
+  } else {
+    var diff = thisMonthLogs.length - lastMonthLogs.length;
+    var pct = Math.round((diff / lastMonthLogs.length) * 100);
+    trendEl.textContent = (diff >= 0 ? '+' : '') + pct + '% vs last month';
+    trendEl.className = 'stat-trend ' + (diff > 0 ? 'up' : diff < 0 ? 'down' : 'flat');
+  }
+
+  var successCount = logs.filter(function(l){ return l.status === 'success'; }).length;
+  var rate = logs.length ? Math.round((successCount / logs.length) * 100) : null;
+  document.getElementById('statSuccessRate').textContent = rate === null ? '--' : rate + '%';
+  document.getElementById('statSuccessSub').textContent = logs.length ? (successCount + ' of last ' + logs.length) : 'No reports yet';
+  document.getElementById('statSuccessSub').className = 'stat-trend ' + (rate === null ? 'flat' : rate >= 90 ? 'up' : rate < 70 ? 'down' : 'flat');
+}
+
+function renderActivityFeed(logs) {
+  var el = document.getElementById('activityPanel');
+  if (!logs.length) {
+    el.innerHTML = '<div class="empty-state" style="padding:32px"><div class="empty-state-text">No activity yet.</div></div>';
+    return;
+  }
+  var html = '';
+  logs.slice(0, 10).forEach(function(l) {
+    var ok = l.status === 'success';
+    html += '<div class="activity-item">'
+      + '<div class="activity-icon ' + (ok ? 'success' : 'failed') + '">' + (ok ? '✓' : '!') + '</div>'
+      + '<div class="activity-main">'
+      + '<div class="activity-text"><b>' + esc(l.client_name) + '</b> report for ' + esc(l.month_label) + ' ' + (ok ? 'generated' : 'failed') + ' by ' + esc(l.generated_by) + '</div>'
+      + '<div class="activity-time">' + formatDate(l.generated_at) + '</div>'
+      + '</div></div>';
+  });
+  el.innerHTML = html;
+}
+
+function _maybeRenderAttention() {
+  if (!_dashState.clients || !_dashState.logs || !_dashState.connSummary) return;
+  renderAttentionPanel(_dashState.clients, _dashState.logs, _dashState.connSummary);
+}
+
+function renderAttentionPanel(clients, logs, summary) {
+  var items = [];
+
+  clients.forEach(function(c) {
+    var srcs = summary[c.client_key];
+    if (srcs) {
+      Object.keys(srcs).forEach(function(src) {
+        if (srcs[src].status === 'error') {
+          items.push({
+            client: c.name, key: c.client_key,
+            reason: (SOURCE_LABELS[src] || src) + ': ' + (srcs[src].lastError || 'Connection error'),
+            severity: 'error'
+          });
+        }
+      });
+    }
+    if (!c.sheet_id || String(c.sheet_id).trim() === '') {
+      items.push({ client: c.name, key: c.client_key, reason: 'No Google Sheet linked', severity: 'warn' });
+    }
+  });
+
+  var latestByClient = {};
+  logs.forEach(function(l) {
+    if (!latestByClient[l.client_key]) latestByClient[l.client_key] = l;
+  });
+  Object.keys(latestByClient).forEach(function(ck) {
+    var l = latestByClient[ck];
+    if (l.status === 'failed') {
+      items.push({ client: l.client_name, key: ck, reason: 'Last report failed: ' + (l.error_msg ? l.error_msg.slice(0,60) : 'Unknown error'), severity: 'error' });
+    }
+  });
+
+  document.getElementById('statAttention').textContent = items.length;
+  var uniqueClients = {};
+  items.forEach(function(i) { uniqueClients[i.key] = true; });
+  var clientCount = Object.keys(uniqueClients).length;
+  document.getElementById('statAttentionSub').textContent = clientCount ? (clientCount + ' client' + (clientCount === 1 ? '' : 's') + ' affected') : 'All clear';
+  document.getElementById('statAttentionCard').className = 'stat-card' + (items.length ? ' accent-danger' : '');
+
+  var el = document.getElementById('attentionPanel');
+  if (!items.length) {
+    el.innerHTML = '<div class="empty-state" style="padding:32px"><div class="empty-state-text">All connections healthy. Nothing needs attention.</div></div>';
+    return;
+  }
+  items.sort(function(a,b) { return (a.severity === 'error' ? 0 : 1) - (b.severity === 'error' ? 0 : 1); });
+  var html = '';
+  items.slice(0, 12).forEach(function(i) {
+    html += '<div class="attention-item">'
+      + '<span class="attention-dot' + (i.severity === 'warn' ? ' warn' : '') + '"></span>'
+      + '<div class="attention-main">'
+      + '<div class="attention-name">' + esc(i.client) + '</div>'
+      + '<div class="attention-reason" title="' + esc(i.reason) + '">' + esc(i.reason) + '</div>'
+      + '</div>'
+      + '<div class="attention-action"><button class="btn-icon" onclick="editClient(\'' + esc(i.key) + '\')">Fix</button></div>'
+      + '</div>';
+  });
+  el.innerHTML = html;
+}
+
+function statusPillHtml(clientKey, source, label) {
+  return '<span class="status-pill never" data-client="' + esc(clientKey) + '" data-source="' + source + '"><span class="dot"></span>' + esc(label) + '</span>';
+}
+
+function applyStatusPillsToCards(summary) {
+  document.querySelectorAll('.status-pill[data-client]').forEach(function(pill) {
+    var ck = pill.getAttribute('data-client'), src = pill.getAttribute('data-source');
+    var s = summary[ck] && summary[ck][src];
+    if (!s) return; // stays 'never'
+    pill.classList.remove('never');
+    pill.classList.add(s.status === 'ok' ? 'ok' : 'error');
+    if (s.status !== 'ok' && s.lastError) pill.title = s.lastError;
+    else if (s.lastCheckAt) pill.title = 'Last checked ' + formatDate(s.lastCheckAt);
+  });
 }
 
 function renderClientCards(clients) {
@@ -129,17 +285,24 @@ function renderClientCards(clients) {
   clients.forEach(function(c) {
     var hasSheet = c.sheet_id && c.sheet_id.trim() !== '';
     var hasGAds  = c.google_ads_enabled === 'true' || c.google_ads_enabled === true;
+    var hasShopify = c.shopify_enabled === 'true' || c.shopify_enabled === true;
     var sheetTag = hasSheet
       ? '<span class="client-tag green">Sheet OK</span>'
-      : '<span class="client-tag" style="background:#FFEBEE;color:#C62828">No Sheet</span>';
+      : '<span class="client-tag" style="background:var(--red-light);color:var(--red)">No Sheet</span>';
     var sheetBtn = hasSheet
       ? '<button class="btn btn-ghost sm" onclick="openClientSheet(\'' + esc(c.client_key) + '\')">Open Sheet</button>'
-      : '<button class="btn btn-ghost sm" style="border-color:#2E7D32;color:#2E7D32" onclick="createClientSheet(\'' + esc(c.client_key) + '\',\'' + esc(c.name) + '\')">+ Create Sheet</button>';
+      : '<button class="btn btn-ghost sm" style="border-color:var(--green);color:var(--green)" onclick="createClientSheet(\'' + esc(c.client_key) + '\',\'' + esc(c.name) + '\')">+ Create Sheet</button>';
+
+    var pills = statusPillHtml(c.client_key, 'meta', 'Meta')
+      + statusPillHtml(c.client_key, 'ga4', 'GA4')
+      + (c.gsc_site_url ? statusPillHtml(c.client_key, 'gsc', 'GSC') : '')
+      + (hasGAds ? statusPillHtml(c.client_key, 'google_ads', 'G.Ads') : '')
+      + (hasShopify ? statusPillHtml(c.client_key, 'shopify', 'Shopify') : '');
+
     html += '<div class="client-card">'
       + '<div class="client-card-name">' + esc(c.name) + '</div>'
       + '<div class="client-card-key">' + esc(c.client_key) + '</div>'
-      + '<div class="client-card-meta"><span class="client-tag">Meta</span><span class="client-tag">GA4</span><span class="client-tag">GSC</span>'
-      + (hasGAds ? '<span class="client-tag green">Google Ads</span>' : '') + sheetTag + '</div>'
+      + '<div class="client-card-meta">' + pills + sheetTag + '</div>'
       + '<div class="client-card-actions" style="flex-wrap:wrap;gap:6px">'
       + '<button class="btn btn-primary sm" onclick="quickGenerate(\'' + esc(c.client_key) + '\',\'' + esc(c.name) + '\')">Generate</button>'
       + sheetBtn
@@ -148,7 +311,7 @@ function renderClientCards(clients) {
       + '</div></div>';
   });
   el.innerHTML = html;
-  
+
   // Clear search on load
   var df = document.getElementById('dashboardSearch');
   if (df) df.value = '';
@@ -172,26 +335,34 @@ function loadClientsTable() {
       clients.forEach(function(c) {
         var hasSheet = c.sheet_id && c.sheet_id.trim() !== '';
         var hasGAds  = c.google_ads_enabled === 'true' || c.google_ads_enabled === true;
+        var hasShopify = c.shopify_enabled === 'true' || c.shopify_enabled === true;
         var sheetBtn = hasSheet
           ? '<button class="btn-icon" onclick="openClientSheet(\'' + esc(c.client_key) + '\')">Open Sheet</button>'
           : '<button class="btn-icon" style="color:var(--green);border-color:var(--green)" onclick="createClientSheet(\'' + esc(c.client_key) + '\',\'' + esc(c.name) + '\')">+ Create Sheet</button>';
         var delBtn = currentUser.role === 'owner'
           ? '<button class="btn-icon" style="color:var(--red)" onclick="deleteClient(\'' + esc(c.client_key) + '\',\'' + esc(c.name) + '\')">X</button>' : '';
+        var pills = statusPillHtml(c.client_key, 'meta', 'Meta')
+          + statusPillHtml(c.client_key, 'ga4', 'GA4')
+          + (c.gsc_site_url ? statusPillHtml(c.client_key, 'gsc', 'GSC') : '')
+          + (hasGAds ? statusPillHtml(c.client_key, 'google_ads', 'G.Ads') : '')
+          + (hasShopify ? statusPillHtml(c.client_key, 'shopify', 'Shopify') : '');
         rows += '<tr>'
           + '<td class="code-cell">' + esc(c.client_key) + '</td>'
           + '<td><strong>' + esc(c.name) + '</strong></td>'
           + '<td>' + esc(c.agent_email) + '</td>'
-          + '<td class="code-cell">' + esc(c.ga4_property_id) + '</td>'
+          + '<td><div style="display:flex;gap:4px;flex-wrap:wrap">' + pills + '</div></td>'
           + '<td><span class="status-badge ' + (hasSheet ? 'success' : 'failed') + '">' + (hasSheet ? 'Linked' : 'No Sheet') + '</span></td>'
-          + '<td><span class="status-badge ' + (hasGAds ? 'success' : 'failed') + '">' + (hasGAds ? 'ON' : 'OFF') + '</span></td>'
           + '<td><div style="display:flex;gap:6px;flex-wrap:wrap">' + sheetBtn
           + '<button class="btn-icon" onclick="editClient(\'' + esc(c.client_key) + '\')">Edit</button>'
           + '<button class="btn-icon" onclick="quickGenerate(\'' + esc(c.client_key) + '\',\'' + esc(c.name) + '\')">Run</button>'
           + '<button class="btn-icon" onclick="viewClientHistory(\'' + esc(c.client_key) + '\',\'' + esc(c.name) + '\')">History</button>'
           + delBtn + '</div></td></tr>';
       });
-      el.innerHTML = '<table><thead><tr><th>Key</th><th>Brand</th><th>Agent</th><th>GA4</th><th>Sheet</th><th>G.Ads</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
-      
+      el.innerHTML = '<table><thead><tr><th>Key</th><th>Brand</th><th>Agent</th><th>Connections</th><th>Sheet</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
+      google.script.run
+        .withSuccessHandler(function(summary) { if (summary && !summary.error) applyStatusPillsToCards(summary); })
+        .serverGetConnectionSummary(currentUser.username, currentUser.clients);
+
       // Clear filters on load
       var sf = document.getElementById('clientSearch');
       if (sf) sf.value = '';
@@ -207,6 +378,8 @@ function showAddClient() {
   document.getElementById('editClientKey').value  = '';
   document.getElementById('fc_client_key').disabled = false;
   clearClientForm();
+  resetTestResults();
+  document.getElementById('testAllWrap').style.display = 'none';
   showPage('clientform');
 }
 
@@ -238,10 +411,86 @@ function editClient(clientKey) {
       document.getElementById('fc_shopify_enabled').value        = String(c.shopify_enabled);
       document.getElementById('fc_shopify_access_token').value   = c.shopify_access_token || '';
       document.getElementById('fc_shopify_shop_name').value      = c.shopify_shop_name || '';
+      resetTestResults();
+      document.getElementById('testAllWrap').style.display = 'block';
       showPage('clientform');
     })
     .withFailureHandler(function(err) { hideLoadingOverlay(); showFlash('error', err.message); })
     .serverGetClientFull(clientKey);
+}
+
+// ── CONNECTION TESTING (client form) ────────────────────────
+function resetTestResults() {
+  Object.keys(SOURCE_LABELS).forEach(function(src) {
+    var r = document.getElementById('testResult_' + src);
+    if (r) { r.textContent = ''; r.className = 'test-conn-result'; }
+    var b = document.getElementById('testBtn_' + src);
+    if (b) { b.disabled = false; b.textContent = 'Test Connection'; }
+  });
+}
+
+function testConnection(source) {
+  var clientKey = document.getElementById('editClientKey').value;
+  var resultEl = document.getElementById('testResult_' + source);
+  var btn = document.getElementById('testBtn_' + source);
+  if (!clientKey) {
+    resultEl.className = 'test-conn-result error';
+    resultEl.textContent = 'Save this client first, then test the connection.';
+    return;
+  }
+  var fnMap = {
+    meta: 'serverTestMetaConnection',
+    ga4: 'serverTestGA4Connection',
+    gsc: 'serverTestGSCConnection',
+    google_ads: 'serverTestGoogleAdsConnection',
+    shopify: 'serverTestShopifyConnection'
+  };
+  btn.disabled = true; btn.textContent = 'Testing...';
+  resultEl.className = 'test-conn-result';
+  resultEl.textContent = '';
+  google.script.run
+    .withSuccessHandler(function(res) {
+      btn.disabled = false; btn.textContent = 'Test Connection';
+      resultEl.className = 'test-conn-result ' + (res.success ? 'ok' : 'error');
+      resultEl.textContent = res.success ? (res.message || 'Connected') : res.error;
+    })
+    .withFailureHandler(function(err) {
+      btn.disabled = false; btn.textContent = 'Test Connection';
+      resultEl.className = 'test-conn-result error';
+      resultEl.textContent = 'Error: ' + err.message;
+    })
+    [fnMap[source]](clientKey);
+}
+
+function testAllConnections() {
+  var clientKey = document.getElementById('editClientKey').value;
+  if (!clientKey) { showFlash('error', 'Save this client first, then test connections.'); return; }
+  var allBtn = document.getElementById('testAllBtn');
+  allBtn.disabled = true; allBtn.textContent = 'Testing all...';
+  Object.keys(SOURCE_LABELS).forEach(function(src) {
+    var b = document.getElementById('testBtn_' + src);
+    if (b) { b.disabled = true; b.textContent = 'Testing...'; }
+  });
+  google.script.run
+    .withSuccessHandler(function(results) {
+      allBtn.disabled = false; allBtn.textContent = 'Test All Connections';
+      Object.keys(results).forEach(function(src) {
+        var res = results[src];
+        var resultEl = document.getElementById('testResult_' + src);
+        var btn = document.getElementById('testBtn_' + src);
+        if (btn) { btn.disabled = false; btn.textContent = 'Test Connection'; }
+        if (resultEl) {
+          resultEl.className = 'test-conn-result ' + (res.success ? 'ok' : 'error');
+          resultEl.textContent = res.success ? (res.message || 'Connected') : res.error;
+        }
+      });
+    })
+    .withFailureHandler(function(err) {
+      allBtn.disabled = false; allBtn.textContent = 'Test All Connections';
+      resetTestResults();
+      showFlash('error', 'Error: ' + err.message);
+    })
+    .serverTestAllConnections(clientKey);
 }
 
 function clearClientForm() {

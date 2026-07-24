@@ -60,6 +60,7 @@ function initSystemSheets() {
     getOrCreateTab(ss, "_ReportLogs",   ["id","client_key","client_name","month_label","generated_by","status","slides_url","pptx_url","error_msg","generated_at"]);
     getOrCreateTab(ss, "_EditRequests", ["id","client_key","requested_by","field_changes","status","requested_at","reviewed_at","reviewed_by"]);
     getOrCreateTab(ss, "_AuditLogs",    ["id","timestamp","username","action","details"]);
+    getOrCreateTab(ss, "_ConnectionStatus", ["client_key","source","last_check_at","last_status","last_error"]);
     
     // Migrate _Clients sheet if it was created with an old schema
     migrateClientsSheetSchema();
@@ -108,6 +109,38 @@ function migrateClientsSheetSchema() {
       return;
     }
 
+    // SAFE PATH: every existing header is a recognized target header (just possibly
+    // reordered, or missing some trailing columns because a new field was added to
+    // targetHdrs). This is purely additive: append the missing columns at the end and
+    // leave all existing headers/data completely untouched. No rewrite, no data loss.
+    const missingHdrs = targetHdrs.filter(h => !hdrs.includes(h));
+    const allExistingRecognized = hdrs.every(h => targetHdrs.includes(h));
+    if (allExistingRecognized) {
+      if (missingHdrs.length > 0) {
+        Logger.log("  + _Clients: adding new column(s) additively: " + missingHdrs.join(", "));
+        const startCol = hdrs.length + 1;
+        sheet.getRange(1, startCol, 1, missingHdrs.length).setValues([missingHdrs]);
+        sheet.getRange(1, startCol, 1, missingHdrs.length)
+          .setBackground("#0D2B6E").setFontColor("#FFFFFF").setFontWeight("bold");
+        const lastRow = sheet.getLastRow();
+        if (lastRow > 1) {
+          const defaultRow = missingHdrs.map(h =>
+            (h === "shopify_enabled" || h === "google_ads_enabled") ? false : (h === "is_active" ? true : ""));
+          const fillRows = [];
+          for (let r = 2; r <= lastRow; r++) fillRows.push(defaultRow);
+          sheet.getRange(2, startCol, fillRows.length, missingHdrs.length).setValues(fillRows);
+        }
+        Logger.log("  ✓ _Clients additive migration complete. Existing data untouched.");
+      }
+      return;
+    }
+
+    // DESTRUCTIVE PATH: headers don't match any known target name (legacy/corrupted
+    // schema). Back up the whole sheet before rewriting so a bad guess in the remap
+    // heuristic below is always recoverable from the backup tab.
+    const backupName = "_Clients_backup_" + Utilities.formatDate(new Date(), Session.getScriptTimeZone() || "Asia/Kolkata", "yyyyMMdd_HHmmss");
+    sheet.copyTo(ss).setName(backupName);
+    Logger.log("  ⚠️ _Clients has unrecognized headers — backed up to '" + backupName + "' before migrating.");
     Logger.log("  ⚠️ Migrating _Clients sheet to new 19-column schema...");
 
     const migratedRows = [];
@@ -123,14 +156,20 @@ function migrateClientsSheetSchema() {
       });
 
       // Map values from existing columns using matching headers
+      const unmapped = [];
       hdrs.forEach((h, colIdx) => {
-        if (h && colIdx < row.length) {
-          const val = row[colIdx];
-          if (val !== undefined && val !== null) {
-            client[h] = val;
-          }
+        if (colIdx >= row.length) return;
+        const val = row[colIdx];
+        if (val === undefined || val === null || val === "") return;
+        if (h && targetHdrs.includes(h)) {
+          client[h] = val;
+        } else {
+          unmapped.push((h || "col" + colIdx) + "=" + val);
         }
       });
+      if (unmapped.length > 0) {
+        Logger.log("  ⚠️ Row " + (i + 1) + " (client_key=" + row[0] + ") has unmapped values that were NOT carried over: " + unmapped.join(", "));
+      }
 
       // Special check: If shopify_enabled is empty/unset, but was saved in an offset column
       // due to mismatched headers, let's restore it.
@@ -343,7 +382,12 @@ function serverGetClientFull(clientKey) {
     const data = sheet.getDataRange().getValues(), hdrs = data[0];
     for (let i = 1; i < data.length; i++) {
       if (String(data[i][0]).trim() === clientKey.trim()) {
-        const obj = {}; hdrs.forEach((h,j) => obj[h] = data[i][j]); return { success: true, client: obj };
+        const obj = {};
+        hdrs.forEach((h,j) => {
+          const v = data[i][j];
+          obj[h] = (typeof v === "string") ? v.trim() : v;
+        });
+        return { success: true, client: obj };
       }
     }
     return { success: false, error: "Client not found: " + clientKey };
@@ -521,6 +565,20 @@ function serverGenerateReport(clientKey, month, generatedBy, userClients) {
       return { success: false, error: "GA4 Property ID is missing for client '" + c.name + "'." };
     }
 
+    const googleAdsEnabled = c.google_ads_enabled === true || c.google_ads_enabled === "TRUE";
+
+    // Validate Google Ads config when enabled (fail fast, before any API calls run)
+    if (googleAdsEnabled) {
+      if (!c.google_ads_customer_id || String(c.google_ads_customer_id).trim() === "") {
+        return { success: false, error: "Google Ads is enabled for client '" + c.name + "' but the Customer ID is missing." };
+      }
+      const hasDevToken = (c.google_ads_dev_token && String(c.google_ads_dev_token).trim() !== "")
+        || PropertiesService.getScriptProperties().getProperty("GOOGLE_ADS_DEVELOPER_TOKEN");
+      if (!hasDevToken) {
+        return { success: false, error: "Google Ads is enabled for client '" + c.name + "' but no Developer Token is configured (Client settings or Script Properties GOOGLE_ADS_DEVELOPER_TOKEN)." };
+      }
+    }
+
     const CLIENT = {
       clientKey: c.client_key,
       name: c.name,
@@ -530,13 +588,16 @@ function serverGenerateReport(clientKey, month, generatedBy, userClients) {
         adAccountIds: c.meta_ad_account_ids ? normalizeMetaAdAccountIds(c.meta_ad_account_ids).split(",").map(s => s.trim()) : []
       },
       googleAds: {
-        enabled: c.google_ads_enabled === true || c.google_ads_enabled === "TRUE",
+        enabled: googleAdsEnabled,
         customerId: c.google_ads_customer_id || "",
-        developerToken: c.google_ads_developer_token || "",
-        managerCustomerId: c.google_ads_manager_customer_id || ""
+        developerToken: c.google_ads_dev_token || "",
+        managerCustomerId: c.google_ads_mcc_id || ""
       },
       ga4: {
         propertyId: c.ga4_property_id || ""
+      },
+      gsc: {
+        siteUrl: c.gsc_site_url || ""
       },
       shopify: {
         enabled:         c.shopify_enabled === true || c.shopify_enabled === "TRUE",
@@ -557,7 +618,11 @@ function serverGenerateReport(clientKey, month, generatedBy, userClients) {
       Logger.log("  [Shopify] Syncing data for " + CLIENT.name + " (" + M.currLabel + ")...");
       const syncResult = serverSyncShopify(CLIENT.clientKey, M.currLabel);
       if (!syncResult.success) {
-        throw new Error("Shopify Sync Failed: " + syncResult.error + " (Please double-check your Shopify Access Token and Store Subdomain under Client settings)");
+        let errDetail = syncResult.error;
+        if (!errDetail.includes("permission scopes") && !errDetail.includes("Forbidden")) {
+          errDetail += " (Please double-check your Shopify Access Token and Store Subdomain under Client settings)";
+        }
+        throw new Error("Shopify Sync Failed: " + errDetail);
       }
     }
 
@@ -965,26 +1030,58 @@ function _runReportForClient(CLIENT, M) {
   const sheetData = readSheet(M, CLIENT);
 
   Logger.log("  Fetching Meta (current)...");
-  const metaCurr = fetchMeta(M.currStart, M.currEnd, CLIENT);
+  let metaCurr, metaPrev;
+  try {
+    metaCurr = fetchMeta(M.currStart, M.currEnd, CLIENT);
+    Logger.log("  Fetching Meta (previous)...");
+    metaPrev = fetchMeta(M.prevStart, M.prevEnd, CLIENT);
+    _setConnectionStatus(CLIENT.clientKey, "meta", "ok", "");
+  } catch(e) {
+    _setConnectionStatus(CLIENT.clientKey, "meta", "error", e.message);
+    throw e;
+  }
 
-  Logger.log("  Fetching Meta (previous)...");
-  const metaPrev = fetchMeta(M.prevStart, M.prevEnd, CLIENT);
-
-  Logger.log("  Fetching Google Ads (current)...");
-  const gAdsCurr = CLIENT.googleAds.enabled ? fetchGoogleAds(M.currStart, M.currEnd, CLIENT) : { campaigns: [], totals: { spend:0, revenue:0, orders:0, impressions:0, clicks:0 } };
-
-  Logger.log("  Fetching Google Ads (previous)...");
-  const gAdsPrev = CLIENT.googleAds.enabled ? fetchGoogleAds(M.prevStart, M.prevEnd, CLIENT) : { campaigns: [], totals: { spend:0, revenue:0, orders:0, impressions:0, clicks:0 } };
+  let gAdsCurr = { campaigns: [], totals: { spend:0, revenue:0, orders:0, impressions:0, clicks:0 } };
+  let gAdsPrev = gAdsCurr;
+  if (CLIENT.googleAds.enabled) {
+    Logger.log("  Fetching Google Ads (current)...");
+    try {
+      gAdsCurr = fetchGoogleAds(M.currStart, M.currEnd, CLIENT);
+      Logger.log("  Fetching Google Ads (previous)...");
+      gAdsPrev = fetchGoogleAds(M.prevStart, M.prevEnd, CLIENT);
+      _setConnectionStatus(CLIENT.clientKey, "google_ads", "ok", "");
+    } catch(e) {
+      _setConnectionStatus(CLIENT.clientKey, "google_ads", "error", e.message);
+      throw e;
+    }
+  }
 
   Logger.log("  Fetching GA4 (current)...");
-  const ga4Curr = fetchGA4(M.currStart, M.currEnd, CLIENT);
-
-  Logger.log("  Fetching GA4 (previous)...");
-  const ga4Prev = fetchGA4(M.prevStart, M.prevEnd, CLIENT);
+  let ga4Curr, ga4Prev;
+  try {
+    ga4Curr = fetchGA4(M.currStart, M.currEnd, CLIENT);
+    Logger.log("  Fetching GA4 (previous)...");
+    ga4Prev = fetchGA4(M.prevStart, M.prevEnd, CLIENT);
+    _setConnectionStatus(CLIENT.clientKey, "ga4", "ok", "");
+  } catch(e) {
+    _setConnectionStatus(CLIENT.clientKey, "ga4", "error", e.message);
+    throw e;
+  }
 
   Logger.log("  Fetching Search Console...");
+  // GSC has no separate "enabled" flag — a blank site URL means the client simply
+  // doesn't use it (skip cleanly). A configured URL that fails to fetch is a real
+  // error and should block report generation like every other source.
   let gsc = { topPages: [], topQueries: [] };
-  try { gsc = fetchGSC(M.currStart, M.currEnd, CLIENT); } catch(e) { Logger.log("  ⚠️ GSC skipped: " + e.message); }
+  if (CLIENT.gsc.siteUrl && String(CLIENT.gsc.siteUrl).trim() !== "") {
+    try {
+      gsc = fetchGSC(M.currStart, M.currEnd, CLIENT);
+      _setConnectionStatus(CLIENT.clientKey, "gsc", "ok", "");
+    } catch(e) {
+      _setConnectionStatus(CLIENT.clientKey, "gsc", "error", e.message);
+      throw e;
+    }
+  }
 
   Logger.log("  Computing metrics...");
   const computed = buildMetrics(metaCurr, metaPrev, gAdsCurr, gAdsPrev, ga4Curr, ga4Prev, sheetData, M);
@@ -1226,7 +1323,11 @@ function readSheet(M, CLIENT) {
 // ============================================================
 
 function fetchMeta(dateStart, dateEnd, CLIENT) {
-  const token = CLIENT.meta.accessToken, v = "v19.0";
+  const token = CLIENT.meta.accessToken;
+  // Meta retires each Graph API version ~2 years after release. Keep this current via
+  // Script Properties (META_GRAPH_API_VERSION) instead of hardcoding — check
+  // developers.facebook.com/docs/graph-api/changelog for the latest stable version.
+  const v = PropertiesService.getScriptProperties().getProperty("META_GRAPH_API_VERSION") || "v21.0";
   const tr = encodeURIComponent(JSON.stringify({ since: dateStart, until: dateEnd }));
   let totSpend = 0, totRev = 0, totOrders = 0, totImpr = 0, totClicks = 0;
   const allCampaigns = [], allCreatives = [];
@@ -1258,7 +1359,7 @@ function fetchMeta(dateStart, dateEnd, CLIENT) {
         if (o > 0) allCreatives.push({ name: ad.ad_name || "—", ctr: parseFloat(ad.ctr || 0).toFixed(1) + "%", cpa: o > 0 ? "₹" + Math.round(s/o) : "—", orders: o, revenue: r });
       });
     } catch(e) {
-      Logger.log("    ⚠️ Meta error for " + acct + ": " + e.message);
+      throw new Error("Meta Ads API failed for ad account '" + acct + "': " + e.message + " (Please double-check the Meta Access Token and Ad Account ID under Client settings, and confirm the token hasn't expired.)");
     }
   });
 
@@ -1343,8 +1444,7 @@ function fetchGoogleAds(dateStart, dateEnd, CLIENT) {
     
     return { campaigns: allCampaigns, totals: { spend: Math.round(totSpend), revenue: Math.round(totRev), orders: totOrders, impressions: totImpr, clicks: totClicks } };
   } catch(e) {
-    Logger.log("  ⚠️ Google Ads error: " + e.message);
-    return { campaigns: [], totals: { spend:0, revenue:0, orders:0, impressions:0, clicks:0 } };
+    throw new Error("Google Ads API failed for client '" + CLIENT.name + "': " + e.message + " (Please double-check the Google Ads Customer ID, Developer Token, and Manager Customer ID under Client settings.)");
   }
 }
 
@@ -1377,8 +1477,7 @@ function fetchGA4(dateStart, dateEnd, CLIENT) {
     const s = parseInt((ov[0] || {}).value || 0), c = parseInt((ov[2] || {}).value || 0);
     return { channels, overall: { sessions: s, newUsers: parseInt((ov[1] || {}).value || 0), convRate: s > 0 ? parseFloat(((c/s)*100).toFixed(2)) : 0, revenue: Math.round(parseFloat((ov[3] || {}).value || 0)) } };
   } catch(e) {
-    Logger.log("  ⚠️ GA4 error: " + e.message);
-    return { channels: { "SEO / Search":{sessions:0,convRate:0,revenue:0}, "Direct":{sessions:0,convRate:0,revenue:0}, "Social Organic":{sessions:0,convRate:0,revenue:0}, "Referral":{sessions:0,convRate:0,revenue:0} }, overall: { sessions:0, newUsers:0, convRate:0, revenue:0 } };
+    throw new Error("GA4 API failed for client '" + CLIENT.name + "': " + e.message + " (Please double-check the GA4 Property ID under Client settings, and confirm this account has Viewer access to that GA4 property.)");
   }
 }
 
@@ -1406,13 +1505,17 @@ function fetchGSC(dateStart, dateEnd, CLIENT) {
       { method:"POST", contentType:"application/json", headers:{ Authorization:"Bearer " + token }, payload: JSON.stringify({ startDate: dateStart, endDate: dateEnd, dimensions: [dim], rowLimit: lim }), muteHttpExceptions: true }
     );
     const json = JSON.parse(resp.getContentText());
-    if (json.error) throw new Error("GSC: " + json.error.message);
+    if (json.error) throw new Error(json.error.message);
     return json.rows || [];
   }
-  return {
-    topPages:   q("page",5).map(r => ({ page: r.keys[0], clicks: r.clicks, impressions: r.impressions, ctr: (r.ctr*100).toFixed(1)+"%", position: r.position.toFixed(1) })),
-    topQueries: q("query",5).map(r => ({ query: r.keys[0], clicks: r.clicks, impressions: r.impressions, ctr: (r.ctr*100).toFixed(1)+"%", position: r.position.toFixed(1) })),
-  };
+  try {
+    return {
+      topPages:   q("page",5).map(r => ({ page: r.keys[0], clicks: r.clicks, impressions: r.impressions, ctr: (r.ctr*100).toFixed(1)+"%", position: r.position.toFixed(1) })),
+      topQueries: q("query",5).map(r => ({ query: r.keys[0], clicks: r.clicks, impressions: r.impressions, ctr: (r.ctr*100).toFixed(1)+"%", position: r.position.toFixed(1) })),
+    };
+  } catch(e) {
+    throw new Error("Search Console API failed for client '" + CLIENT.name + "': " + e.message + " (Please double-check the GSC Site URL under Client settings — it must exactly match a verified property, e.g. 'sc-domain:example.com' or 'https://example.com/', and this account must have access to it in Search Console.)");
+  }
 }
 
 
@@ -2288,9 +2391,7 @@ function serverSyncShopify(clientKey, monthLabel) {
     let shop = c.shopify_shop_name;
     if (!token || !shop) throw new Error("Shopify access token or shop name is missing.");
 
-    if (!shop.includes(".") && !shop.includes("myshopify.com")) {
-      shop = shop.trim() + ".myshopify.com";
-    }
+    shop = _normalizeShopifyShopName(shop);
 
     const sheetId = c.sheet_id;
     if (!sheetId) throw new Error("No Google Sheet linked to this client.");
@@ -2310,9 +2411,11 @@ function serverSyncShopify(clientKey, monthLabel) {
       Logger.log("  ⚠️ Previous month Shopify sync skipped/failed: " + pe.message);
     }
 
+    _setConnectionStatus(clientKey, "shopify", "ok", "");
     return { success: true, message: "Shopify data successfully synchronized for " + monthLabel };
   } catch(e) {
     Logger.log("serverSyncShopify error: " + e.message);
+    _setConnectionStatus(clientKey, "shopify", "error", e.message);
     return { success: false, error: e.message };
   }
 }
@@ -2327,7 +2430,34 @@ function _syncShopifyMonthData(shopDomain, accessToken, sheetId, monthLabel, dat
   while (url) {
     const resp = UrlFetchApp.fetch(url, { headers, muteHttpExceptions: true });
     if (resp.getResponseCode() !== 200) {
-      throw new Error("Shopify API responded with code " + resp.getResponseCode() + ": " + resp.getContentText());
+      const status = resp.getResponseCode();
+      const body = resp.getContentText();
+      if (status === 403) {
+        throw new Error(
+          "Shopify API returned a 403 Forbidden error. This means your Shopify Access Token is missing required permission scopes.\n\n" +
+          "To fix this, please update your Shopify Custom App configuration:\n" +
+          "1. Log in to your Shopify Admin panel.\n" +
+          "2. Navigate to Settings > Apps and sales channels > Develop apps.\n" +
+          "3. Select your custom app.\n" +
+          "4. Under the 'Configuration' tab, click 'Configure' or 'Edit' next to 'Admin API integration'.\n" +
+          "5. Scroll down to 'Orders' and check the box for 'read_orders'.\n" +
+          "6. Scroll down to 'Customers' and check 'read_customers'. Also ensure 'read_products' under 'Products' is checked.\n" +
+          "7. Click 'Save' at the bottom/top of the page.\n" +
+          "8. Go to the 'API credentials' tab and click 'Re-install app' or 'Install app' to authorize the changes."
+        );
+      }
+      if (status === 401) {
+        throw new Error(
+          "Shopify API returned a 401 Unauthorized error. This means the Access Token is invalid or no longer works.\n\n" +
+          "Please verify:\n" +
+          "1. You are pasting the permanent Admin API access token from the 'API credentials' tab (starts with 'shpat_' or 'shpca_' — both are valid, the prefix just depends on when the app was created).\n" +
+          "2. Do NOT paste the temporary authorization code (which is short-lived and expires quickly).\n" +
+          "3. Do NOT paste the Client Secret or API Key from your Shopify Dev Dashboard.\n" +
+          "4. The app is actually installed (or re-installed after any scope change) on this store — an uninstalled or scope-changed app invalidates its old token.\n" +
+          "5. The token belongs to this exact store domain, not a different one."
+        );
+      }
+      throw new Error("Shopify API responded with code " + status + ": " + body);
     }
     const data = JSON.parse(resp.getContentText());
     orders = orders.concat(data.orders || []);
@@ -2665,9 +2795,7 @@ function serverTestShopifyConnection(clientKey) {
       return { success: false, error: "Shopify access token or shop name is missing for this client." };
     }
     
-    if (!shop.includes(".") && !shop.includes("myshopify.com")) {
-      shop = shop.trim() + ".myshopify.com";
-    }
+    shop = _normalizeShopifyShopName(shop);
     
     const url = "https://" + shop + "/admin/api/2025-01/shop.json";
     const headers = { "X-Shopify-Access-Token": token, "Content-Type": "application/json" };
@@ -2678,23 +2806,243 @@ function serverTestShopifyConnection(clientKey) {
     
     if (responseCode === 200) {
       const data = JSON.parse(responseText);
-      return { 
-        success: true, 
-        message: "✅ Connection Succeeded!", 
-        shopName: data.shop?.name || "Unknown", 
-        domain: data.shop?.domain || shop, 
+      _setConnectionStatus(clientKey, "shopify", "ok", "");
+      return {
+        success: true,
+        message: "✅ Connection Succeeded!",
+        shopName: data.shop?.name || "Unknown",
+        domain: data.shop?.domain || shop,
         currency: data.shop?.currency || "Unknown",
         timezone: data.shop?.iana_timezone || "Unknown"
       };
     } else {
-      return { 
-        success: false, 
-        error: "Shopify API returned HTTP " + responseCode + ": " + responseText 
+      let errDetail = responseText;
+      if (responseCode === 403) {
+        errDetail = "Shopify API returned a 403 Forbidden error. This means your Shopify Access Token is missing required permission scopes. " +
+                    "To fix this, please update your Shopify Custom App to grant 'read_orders', 'read_customers', and 'read_products' scopes, then click 'Save' and 'Re-install app' under Develop Apps configuration.";
+      } else if (responseCode === 401) {
+        errDetail = "Shopify API returned a 401 Unauthorized error. This means the Access Token is invalid. " +
+                    "Please verify that you are pasting the permanent Admin API access token (which starts with 'shpat_'), and not the Client Secret or temporary authorization code.";
+      }
+      _setConnectionStatus(clientKey, "shopify", "error", errDetail);
+      return {
+        success: false,
+        error: "Shopify API returned HTTP " + responseCode + ": " + errDetail
       };
     }
   } catch(e) {
+    _setConnectionStatus(clientKey, "shopify", "error", e.message);
     return { success: false, error: e.message };
   }
+}
+
+// ============================================================
+// SECTION L — CONNECTION STATUS TRACKING
+// ============================================================
+
+function _setConnectionStatus(clientKey, source, status, errorMsg) {
+  try {
+    initSystemSheets();
+    const sheet = getSystemSheet().getSheetByName("_ConnectionStatus");
+    const data = sheet.getDataRange().getValues(), hdrs = data[0];
+    const ckIdx = hdrs.indexOf("client_key"), srcIdx = hdrs.indexOf("source");
+    const now = new Date().toISOString();
+    for (let i = 1; i < data.length; i++) {
+      if (data[i][ckIdx] === clientKey && data[i][srcIdx] === source) {
+        sheet.getRange(i + 1, hdrs.indexOf("last_check_at") + 1).setValue(now);
+        sheet.getRange(i + 1, hdrs.indexOf("last_status") + 1).setValue(status);
+        sheet.getRange(i + 1, hdrs.indexOf("last_error") + 1).setValue(errorMsg || "");
+        return;
+      }
+    }
+    sheet.appendRow([clientKey, source, now, status, errorMsg || ""]);
+  } catch(e) {
+    Logger.log("_setConnectionStatus error: " + e.message);
+  }
+}
+
+// Returns { [client_key]: { [source]: { status, lastCheckAt, lastError } } }, scoped to the caller's assigned clients.
+function serverGetConnectionSummary(currentUsername, userClients) {
+  try {
+    initSystemSheets();
+    const isOwner = verifyUserRole(currentUsername, "owner");
+    const allowed = String(userClients || "").split(",").map(s => s.trim().toLowerCase());
+    const sheet = getSystemSheet().getSheetByName("_ConnectionStatus");
+    const data = sheet.getDataRange().getValues(), hdrs = data[0];
+    const ckIdx = hdrs.indexOf("client_key"), srcIdx = hdrs.indexOf("source"),
+          caIdx = hdrs.indexOf("last_check_at"), stIdx = hdrs.indexOf("last_status"), erIdx = hdrs.indexOf("last_error");
+    const summary = {};
+    for (let i = 1; i < data.length; i++) {
+      const row = data[i], ck = row[ckIdx];
+      if (!isOwner && !allowed.includes("all") && !allowed.includes(String(ck).toLowerCase())) continue;
+      if (!summary[ck]) summary[ck] = {};
+      summary[ck][row[srcIdx]] = { status: row[stIdx], lastCheckAt: row[caIdx], lastError: row[erIdx] };
+    }
+    return summary;
+  } catch(e) {
+    return { error: e.message };
+  }
+}
+
+function serverTestMetaConnection(clientKey) {
+  try {
+    const result = serverGetClientFull(clientKey);
+    if (!result.success) return { success: false, error: result.error };
+    const c = result.client;
+    if (!c.meta_access_token || !c.meta_ad_account_ids) {
+      const err = "Meta Access Token or Ad Account ID is missing for this client.";
+      _setConnectionStatus(clientKey, "meta", "error", err);
+      return { success: false, error: err };
+    }
+    const v = PropertiesService.getScriptProperties().getProperty("META_GRAPH_API_VERSION") || "v21.0";
+    const acct = normalizeMetaAdAccountIds(c.meta_ad_account_ids).split(",")[0].trim();
+    const resp = UrlFetchApp.fetch("https://graph.facebook.com/" + v + "/" + acct + "?fields=name,account_status&access_token=" + c.meta_access_token, { muteHttpExceptions: true });
+    const json = JSON.parse(resp.getContentText());
+    if (json.error) throw new Error(json.error.message);
+    _setConnectionStatus(clientKey, "meta", "ok", "");
+    return { success: true, message: "✅ Connected: " + (json.name || acct) };
+  } catch(e) {
+    _setConnectionStatus(clientKey, "meta", "error", e.message);
+    return { success: false, error: e.message };
+  }
+}
+
+function serverTestGoogleAdsConnection(clientKey) {
+  try {
+    const result = serverGetClientFull(clientKey);
+    if (!result.success) return { success: false, error: result.error };
+    const c = result.client;
+    const enabled = c.google_ads_enabled === true || c.google_ads_enabled === "TRUE";
+    if (!enabled) return { success: false, error: "Google Ads is not enabled for this client." };
+    const custId = (c.google_ads_customer_id || "").replace(/-/g, "");
+    if (!custId) {
+      const err = "Google Ads Customer ID is missing.";
+      _setConnectionStatus(clientKey, "google_ads", "error", err);
+      return { success: false, error: err };
+    }
+    let devToken = (c.google_ads_dev_token || "").trim();
+    if (!devToken) devToken = PropertiesService.getScriptProperties().getProperty("GOOGLE_ADS_DEVELOPER_TOKEN");
+    if (!devToken) {
+      const err = "Google Ads Developer Token is not configured (Client settings or Script Properties GOOGLE_ADS_DEVELOPER_TOKEN).";
+      _setConnectionStatus(clientKey, "google_ads", "error", err);
+      return { success: false, error: err };
+    }
+    const mccId = (c.google_ads_mcc_id || custId).replace(/-/g, "");
+    const headers = { "Authorization": "Bearer " + ScriptApp.getOAuthToken(), "developer-token": devToken, "login-customer-id": mccId, "Content-Type": "application/json" };
+    const resp = UrlFetchApp.fetch("https://googleads.googleapis.com/v19/customers/" + custId + "/googleAds:search", {
+      method: "POST", contentType: "application/json", headers: headers,
+      payload: JSON.stringify({ query: "SELECT customer.id, customer.descriptive_name FROM customer LIMIT 1" }),
+      muteHttpExceptions: true
+    });
+    const json = JSON.parse(resp.getContentText());
+    if (json.error) throw new Error(json.error.message);
+    _setConnectionStatus(clientKey, "google_ads", "ok", "");
+    return { success: true, message: "✅ Connected: Customer " + custId };
+  } catch(e) {
+    _setConnectionStatus(clientKey, "google_ads", "error", e.message);
+    return { success: false, error: e.message };
+  }
+}
+
+function serverTestGA4Connection(clientKey) {
+  try {
+    const result = serverGetClientFull(clientKey);
+    if (!result.success) return { success: false, error: result.error };
+    const c = result.client;
+    if (!c.ga4_property_id) {
+      const err = "GA4 Property ID is missing for this client.";
+      _setConnectionStatus(clientKey, "ga4", "error", err);
+      return { success: false, error: err };
+    }
+    const resp = UrlFetchApp.fetch("https://analyticsdata.googleapis.com/v1beta/properties/" + c.ga4_property_id + ":runReport", {
+      method: "POST", contentType: "application/json",
+      headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() },
+      payload: JSON.stringify({ dateRanges: [{ startDate: "yesterday", endDate: "today" }], metrics: [{ name: "sessions" }] }),
+      muteHttpExceptions: true
+    });
+    const json = JSON.parse(resp.getContentText());
+    if (json.error) throw new Error(json.error.message);
+    _setConnectionStatus(clientKey, "ga4", "ok", "");
+    return { success: true, message: "✅ Connected to GA4 property " + c.ga4_property_id };
+  } catch(e) {
+    _setConnectionStatus(clientKey, "ga4", "error", e.message);
+    return { success: false, error: e.message };
+  }
+}
+
+function serverTestGSCConnection(clientKey) {
+  try {
+    const result = serverGetClientFull(clientKey);
+    if (!result.success) return { success: false, error: result.error };
+    const c = result.client;
+    if (!c.gsc_site_url) {
+      const err = "GSC Site URL is missing for this client.";
+      _setConnectionStatus(clientKey, "gsc", "error", err);
+      return { success: false, error: err };
+    }
+    const resp = UrlFetchApp.fetch("https://www.googleapis.com/webmasters/v3/sites/" + encodeURIComponent(c.gsc_site_url), {
+      headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() }, muteHttpExceptions: true
+    });
+    const json = JSON.parse(resp.getContentText());
+    if (json.error) throw new Error(json.error.message);
+    _setConnectionStatus(clientKey, "gsc", "ok", "");
+    return { success: true, message: "✅ Verified access to " + c.gsc_site_url };
+  } catch(e) {
+    _setConnectionStatus(clientKey, "gsc", "error", e.message);
+    return { success: false, error: e.message };
+  }
+}
+
+function serverTestAllConnections(clientKey) {
+  return {
+    meta:       serverTestMetaConnection(clientKey),
+    google_ads: serverTestGoogleAdsConnection(clientKey),
+    ga4:        serverTestGA4Connection(clientKey),
+    gsc:        serverTestGSCConnection(clientKey),
+    shopify:    serverTestShopifyConnection(clientKey)
+  };
+}
+
+/**
+ * Normalizes the Shopify shop name/URL into a standard host domain (e.g. "brandname.myshopify.com").
+ * Handles inputs like "brandname", "brandname.myshopify.com", "https://brandname.myshopify.com",
+ * "admin.shopify.com/store/brandname", "https://admin.shopify.com/store/brandname/", etc.
+ * 
+ * @param {string} shopName The raw shop name or URL entered by the user.
+ * @return {string} The normalized shop domain.
+ */
+function _normalizeShopifyShopName(shopName) {
+  if (!shopName) return "";
+  
+  let shop = shopName.trim();
+  
+  // Remove protocol if present
+  shop = shop.replace(/^https?:\/\//i, '');
+  
+  // Remove trailing slashes
+  shop = shop.replace(/\/+$/, '');
+  
+  // Handle admin.shopify.com/store/STORE_NAME format
+  if (shop.toLowerCase().includes("admin.shopify.com/store/")) {
+    const parts = shop.split("/");
+    const idx = parts.findIndex(p => p.toLowerCase() === "store");
+    if (idx !== -1 && idx + 1 < parts.length) {
+      shop = parts[idx + 1];
+    }
+  } else {
+    // If it's a general URL/domain, extract just the host part (before the first slash)
+    const slashIdx = shop.indexOf("/");
+    if (slashIdx !== -1) {
+      shop = shop.substring(0, slashIdx);
+    }
+  }
+  
+  // Ensure it has a domain extension, default to .myshopify.com
+  if (!shop.includes(".")) {
+    shop = shop + ".myshopify.com";
+  }
+  
+  return shop;
 }
 
 function shareAllExistingSheetsWithAgency() {
